@@ -17,6 +17,28 @@ from ..data import grid
 from . import cig
 
 
+def predictions_path(run, out_path: str | Path | None = None) -> Path:
+    """Canonical netCDF path for a run's predictions (the cache/output location)."""
+    return Path(out_path) if out_path else (PRODUCTS / f"figs_{run:%Y%m%d_%HZ}.nc")
+
+
+def read_predictions(path: str | Path) -> dict:
+    """Reconstruct the ``{fxx: {'p_<h>':(ny,nx), 'dist_<h>':(nbins,ny,nx)}}`` dict
+    from a netCDF written by ``write_predictions`` — the inverse, used as a cache."""
+    import xarray as xr
+
+    out: dict = {}
+    with xr.open_dataset(path) as ds:
+        fxxs = [int(f) for f in ds["fxx"].values]
+        for i, f in enumerate(fxxs):
+            d = {}
+            for h in HAZARDS:
+                d[f"p_{h}"] = ds[f"p_{h}"].isel(fxx=i).values.astype("float32")
+                d[f"dist_{h}"] = ds[f"dist_{h}"].isel(fxx=i).values.astype("float32")
+            out[f] = d
+    return out
+
+
 def write_predictions(predictions: dict, run, out_path: str | Path | None = None) -> str:
     """Write ``predictions`` (``{fxx: {'p_<h>':(ny,nx), 'dist_<h>':(nbins,ny,nx)}}``)
     to netCDF. Returns the path."""

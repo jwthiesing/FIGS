@@ -83,20 +83,17 @@ def cmd_train(args):
 
 
 def cmd_predict(args):
-    from .model.predict import predict_forecast
+    from .model.predict import predict_or_load
     from .products.forecast import render_forecast
-    from .products.netcdf import write_predictions
 
     run = _parse_dt(args.run)
     fxx_list = list(range(1, args.fmax + 1))
-    preds = predict_forecast(run, fxx_list, models_dir=args.models,
-                             max_members=args.members, temporal=args.temporal,
-                             workers=args.workers)
-    label = run.strftime("%Y%m%d_%HZ")
-    nc = write_predictions(preds, run, args.nc)
-    print(f"wrote netCDF: {nc}")
+    # predict_or_load caches/writes the netCDF (same file is cache + output)
+    preds = predict_or_load(run, fxx_list, models_dir=args.models,
+                            max_members=args.members, temporal=args.temporal,
+                            workers=args.workers, cache=not args.no_cache, out_path=args.nc)
     if not args.no_plots:
-        out = render_forecast(preds, label, out_dir=args.out)
+        out = render_forecast(preds, run, out_dir=args.out)   # datetime -> full valid times in titles
         print("rendered products:")
         for h, d in out.items():
             print(f"  {h}: {d}")
@@ -176,7 +173,9 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--temporal", action="store_true",
                    help="include previous/following-hour fields (must match training)")
     pr.add_argument("--nc", default=None,
-                   help="output netCDF path (default Data/products/figs_<run>.nc)")
+                   help="output netCDF path (default Data/products/figs_<run>.nc); also the cache")
+    pr.add_argument("--no-cache", action="store_true",
+                   help="ignore any cached netCDF for this run and recompute from scratch")
     pr.add_argument("--no-plots", action="store_true", help="write only the netCDF, skip plots")
     pr.set_defaults(func=cmd_predict)
     return p

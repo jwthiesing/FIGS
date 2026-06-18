@@ -34,6 +34,60 @@ Conditional Intensity Guidance (CIG) products.
 `p(tor) p(wind) p(hail)` · `p(EF0..EF4+|tor)` · `p(50-55..83+kt|wind)` ·
 `p(1-1.49..3.5+in|hail)` → mapped to SPC probability + CIG categorical outlooks.
 
+### Probability + CIG → categorical (custom)
+
+The probability fills use the SPC outlook colors, with a **custom low level added**
+below the SPC scale (tor **1%** pastel green; wind/hail **2%** pastel brown):
+
+| hazard | probability levels (%) |
+|---|---|
+| tornado | **1**, 2, 5, 10, 15, 30, 45, 60 |
+| wind | **2**, 5, 15, 30, 45, 60, 75, 90 |
+| hail | **2**, 5, 15, 30, 45, 60 |
+
+The SPC-style **categorical** outlook is then looked up from the probability **and**
+the cell's CIG (conditional-intensity) category — a custom extension of the official
+SPC probability-to-category tables that adds a low **TSTM** row and a **CIG3**
+("extreme conditional intensity") column. Cells: `TSTM`(light green) `MRGL`(green)
+`SLGT`(yellow) `ENH`(orange) `MDT`(red) `HIGH`(magenta); below the lowest probability = no risk.
+
+**Tornado**
+
+| p(tor) | <CIG1 | CIG1 | CIG2 | CIG3 |
+|---|---|---|---|---|
+| 1% | TSTM | MRGL | MRGL | SLGT |
+| 2% | MRGL | MRGL | SLGT | SLGT |
+| 5% | SLGT | SLGT | ENH | ENH |
+| 10% | SLGT | ENH | ENH | ENH |
+| 15% | ENH | ENH | MDT | MDT |
+| 30% | ENH | MDT | HIGH | HIGH |
+| 45% | ENH | MDT | HIGH | HIGH |
+| 60% | ENH | HIGH | HIGH | HIGH |
+
+**Wind**
+
+| p(wind) | <CIG1 | CIG1 | CIG2 | CIG3 |
+|---|---|---|---|---|
+| 2% | TSTM | MRGL | MRGL | SLGT |
+| 5% | MRGL | MRGL | SLGT | SLGT |
+| 15% | SLGT | SLGT | ENH | ENH |
+| 30% | SLGT | ENH | ENH | MDT |
+| 45% | ENH | ENH | MDT | HIGH |
+| 60% | ENH | MDT | HIGH | HIGH |
+| 75% | ENH | MDT | HIGH | HIGH |
+| 90% | ENH | MDT | HIGH | HIGH |
+
+**Hail**
+
+| p(hail) | <CIG1 | CIG1 | CIG2 | CIG3 |
+|---|---|---|---|---|
+| 2% | TSTM | MRGL | MRGL | SLGT |
+| 5% | MRGL | MRGL | SLGT | SLGT |
+| 15% | SLGT | SLGT | ENH | ENH |
+| 30% | SLGT | ENH | ENH | MDT |
+| 45% | ENH | ENH | MDT | HIGH |
+| 60% | ENH | MDT | MDT | HIGH |
+
 ## Input parameters (per forecast hour)
 
 ≈5,100 features. Most are **spatially smoothed**: the key fields are averaged at

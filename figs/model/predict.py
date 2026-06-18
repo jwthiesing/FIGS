@@ -233,3 +233,30 @@ def predict_forecast(run, fxx_list, models_dir=None, *, max_members=6, temporal=
         for fxx, pred in ex.map(_forecast_worker, fxxs):
             out[fxx] = pred
     return out
+
+
+def predict_or_load(run, fxx_list, models_dir=None, *, max_members=6, temporal=False,
+                    workers: int = 4, cache: bool = True, write: bool = True,
+                    out_path=None) -> dict:
+    """Predictions for ``run`` with on-disk caching. If a netCDF for this run exists
+    and covers every requested fxx, load it (no download); otherwise run
+    ``predict_forecast`` and (``write``) save the netCDF — so the same file is both
+    the cache and the persistent output. Returns ``{fxx: {...}}``."""
+    from ..products import netcdf
+
+    path = netcdf.predictions_path(run, out_path)
+    fxxs = [int(f) for f in fxx_list]
+    if cache and Path(path).exists():
+        try:
+            cached = netcdf.read_predictions(path)
+            if all(f in cached for f in fxxs):
+                print(f"loaded cached predictions: {path}", flush=True)
+                return {f: cached[f] for f in fxxs}
+        except Exception as e:  # noqa: BLE001 - corrupt/old cache -> recompute
+            print(f"[warn] cache read failed ({e}); recomputing", flush=True)
+    preds = predict_forecast(run, fxxs, models_dir=models_dir, max_members=max_members,
+                             temporal=temporal, workers=workers)
+    if write:
+        netcdf.write_predictions(preds, run, path)
+        print(f"wrote predictions: {path}", flush=True)
+    return preds

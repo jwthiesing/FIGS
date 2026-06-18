@@ -299,10 +299,14 @@ CIG_REFERENCE = {
 # --------------------------------------------------------------------------- #
 CATEGORY_NAMES = {0: "TSTM", 1: "MRGL", 2: "SLGT", 3: "ENH", 4: "MDT", 5: "HIGH"}
 
+# (prob % threshold, (<CIG1, CIG1, CIG2, CIG3) -> SPC category 0=TSTM..5=HIGH).
+# Custom FIGS extension of the official SPC tables: a low TSTM/MRGL row at the
+# bottom and a CIG3 ("extreme conditional intensity") column driving the upgrades.
 CIG_CONVERSION = {
     "tor": [
-        (2.0, (1, 1, 2, None)),
-        (5.0, (2, 2, 3, None)),
+        (1.0, (0, 1, 1, 2)),    # TSTM / MRGL / MRGL / SLGT
+        (2.0, (1, 1, 2, 2)),
+        (5.0, (2, 2, 3, 3)),
         (10.0, (2, 3, 3, 3)),
         (15.0, (3, 3, 4, 4)),
         (30.0, (3, 4, 5, 5)),
@@ -310,15 +314,17 @@ CIG_CONVERSION = {
         (60.0, (3, 5, 5, 5)),
     ],
     "wind": [
-        (5.0, (1, 1, 2, None)),
-        (15.0, (2, 2, 3, None)),
-        (30.0, (2, 3, 3, None)),
+        (2.0, (0, 1, 1, 2)),    # TSTM / MRGL / MRGL / SLGT
+        (5.0, (1, 1, 2, 2)),
+        (15.0, (2, 2, 3, 3)),
+        (30.0, (2, 3, 3, 4)),
         (45.0, (3, 3, 4, 5)),
         (60.0, (3, 4, 5, 5)),
         (75.0, (3, 4, 5, 5)),
         (90.0, (3, 4, 5, 5)),
     ],
-    "hail": [  # CIG3 (last column) is a user-specified extension
+    "hail": [
+        (2.0, (0, 1, 1, 2)),    # TSTM / MRGL / MRGL / SLGT
         (5.0, (1, 1, 2, 2)),
         (15.0, (2, 2, 3, 3)),
         (30.0, (2, 3, 3, 4)),
@@ -375,9 +381,10 @@ HRRRV4_START = "2020-12-02"   # HRRRv4 operational
 # Official SPC probabilistic-outlook levels (fractions). Tornado uses a 2% floor
 # and a 10% level; wind and hail start at 5% and omit 2%/10%.
 SPC_PROB_LEVELS = {
-    "tor": (0.02, 0.05, 0.10, 0.15, 0.30, 0.45, 0.60),
-    "wind": (0.05, 0.15, 0.30, 0.45, 0.60, 0.75, 0.90),  # SPC added 75/90%
-    "hail": (0.05, 0.15, 0.30, 0.45, 0.60),
+    # custom low end: FIGS adds tor 1% and wind/hail 2% below the SPC levels
+    "tor": (0.01, 0.02, 0.05, 0.10, 0.15, 0.30, 0.45, 0.60),
+    "wind": (0.02, 0.05, 0.15, 0.30, 0.45, 0.60, 0.75, 0.90),  # SPC added 75/90%
+    "hail": (0.02, 0.05, 0.15, 0.30, 0.45, 0.60),
 }
 
 

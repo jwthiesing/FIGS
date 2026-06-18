@@ -124,6 +124,17 @@ def train_all(parquet_path: str, out_dir: str | None = None, *,
             ytr = {h: aux_tr[h].to_numpy(np.int8) for h in HAZARDS}
             ybin = {h: aux_tr[f"{h}_bin"].to_numpy(np.int8) for h in HAZARDS}
             wtr = aux_tr["weight"].to_numpy(np.float32)
+            if n_bags > 1:
+                # This bag holds ALL positives but only ~1/n_bags of the negatives,
+                # so scale negative weights by n_bags to keep it an UNBIASED
+                # reweighted sample (else the bag over-weights positives -> biased-
+                # high p, which the calibrator then over-corrects). Negatives are the
+                # any-hazard-negative rows (the build's downsampled, weight>1 cells).
+                is_pos = np.zeros(len(wtr), dtype=bool)
+                for h in HAZARDS:
+                    is_pos |= ytr[h] == 1
+                wtr = wtr.copy()
+                wtr[~is_pos] *= n_bags
             rows_per_bag = len(Xtr)
             del aux_tr
             _clear_mlx_cache()

@@ -146,6 +146,31 @@ def members_for(run: datetime, fxx: int, max_members: int = None) -> list[HRRRRu
     return recent_runs_for_valid(run + timedelta(hours=fxx), m, as_of=run)
 
 
+# transient S3/HTTP failures to retry (the bucket throttles / has brief outages)
+_TRANSIENT = ("503", "502", "500", "504", "429", "Service Unavailable", "SlowDown",
+              "Timeout", "timed out", "Connection", "ConnectionError", "reset by peer",
+              "Temporary", "InternalError", "RequestTimeout")
+
+
+def _with_retry(fn, *, what="fetch", tries: int = 5, base: float = 1.5):
+    """Call ``fn`` with exponential backoff on TRANSIENT errors (e.g. the HRRR S3
+    bucket returning 503). Re-raises immediately on non-transient errors and after
+    the last try, so a genuinely missing file still fails fast."""
+    import time
+
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            if i == tries - 1 or not any(s in msg for s in _TRANSIENT):
+                raise
+            wait = base * (2 ** i)
+            print(f"[warn] transient {what} error ({msg.splitlines()[0][:80]}); "
+                  f"retry {i + 1}/{tries - 1} in {wait:.0f}s", flush=True)
+            time.sleep(wait)
+
+
 def _herbie(run: datetime, fxx: int, product: str):
     """Construct a Herbie object for a run/fxx/product (lazy import)."""
     from herbie import Herbie
@@ -166,10 +191,10 @@ def _open(H, search, overwrite: bool = False):
     byte-range read — see ``isobaric_cube``)."""
     if overwrite:
         try:
-            H.download(search, overwrite=True)
+            _with_retry(lambda: H.download(search, overwrite=True), what="download")
         except Exception:  # noqa: BLE001 - fall through to xarray's own fetch
             pass
-    res = H.xarray(search, remove_grib=False)
+    res = _with_retry(lambda: H.xarray(search, remove_grib=False), what="xarray")
     return res if isinstance(res, list) else [res]
 
 
@@ -178,7 +203,7 @@ def _single_field(H, search) -> np.ndarray:
     squeezing any singleton level dimension. Raises KeyError if the search
     matches no GRIB messages (checked via the idx inventory to avoid Herbie/cfgrib
     erroring on an empty subset download)."""
-    if len(H.inventory(search)) == 0:
+    if len(_with_retry(lambda: H.inventory(search), what="inventory")) == 0:
         raise KeyError(f"no idx match for search {search!r}")
     dss = _open(H, search)
     try:
@@ -295,17 +320,35 @@ def _map_surface(dss) -> dict[str, np.ndarray]:
     return out
 
 
+# surface fields the deterministic pipeline (profiles) cannot proceed without
+_SFC_REQUIRED = ("t2m", "td2m", "u10", "v10", "psfc", "zsfc")
+
+
 def surface_fields_combined(run: datetime, fxx: int) -> dict[str, np.ndarray]:
     """Like ``surface_fields`` but fetches all surface fields in ONE download +
-    one cfgrib open (≈3x faster, far fewer requests), then maps + adds soil."""
+    one cfgrib open (≈3x faster, far fewer requests), then maps + adds soil.
+
+    Verifies the essential fields are present and re-fetches fresh (overwrite) if a
+    concurrent byte-range read truncated the file — the surface analog of the
+    ``isobaric_cube`` self-heal (else a missing 't2m' crashes profile building)."""
     H = _herbie(run, fxx, "sfc")
     combined = "|".join(SFC_SEARCHES.values())
-    dss = _open(H, combined)
-    try:
-        out = _map_surface(dss)
-    finally:
-        for ds in dss:
-            ds.close()
+    out, missing = {}, None
+    for attempt in range(3):
+        dss = _open(H, combined, overwrite=(attempt > 0))
+        try:
+            out = _map_surface(dss)
+        finally:
+            for ds in dss:
+                ds.close()
+        missing = [k for k in _SFC_REQUIRED if k not in out]
+        if not missing:
+            break
+        print(f"[warn] truncated surface read {run:%Y-%m-%d %H}Z f{fxx:02d} "
+              f"(missing {missing}); re-fetching (attempt {attempt + 1}/3)", flush=True)
+    if missing:
+        raise RuntimeError(f"surface_fields_combined {run:%Y-%m-%d %H}Z f{fxx:02d}: missing "
+                           f"{missing} after 3 fetches; reduce predict --workers")
     # soil lives in the pressure product
     Hp = _herbie(run, fxx, "prs")
     for key, search in SOIL_SEARCHES.items():

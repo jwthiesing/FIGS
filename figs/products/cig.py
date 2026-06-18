@@ -68,13 +68,14 @@ def _filled_table(hazard: str) -> tuple[np.ndarray, np.ndarray]:
 def prob_to_category(hazard: str, prob_pct: np.ndarray, cig_idx: np.ndarray) -> np.ndarray:
     """SPC categorical level (0..5) from hazard probability (%) and CIG index.
 
-    ``prob_pct`` and ``cig_idx`` are (ny, nx). Below the lowest probability
-    threshold the category is 0 (none/TSTM)."""
+    ``prob_pct`` and ``cig_idx`` are (ny, nx). Returns 0..5 (0 = TSTM) where the
+    probability reaches the lowest threshold, and **-1 below it** (no risk) so that
+    the genuine TSTM (0) area is distinct from the un-drawn background."""
     thr, table = _filled_table(hazard)
     prob_pct = np.asarray(prob_pct, dtype=float)
     cig_idx = np.clip(np.asarray(cig_idx, dtype=int), 0, 3)
     row = np.searchsorted(thr, prob_pct, side="right") - 1   # -1 below all
-    out = np.zeros(prob_pct.shape, dtype=np.int8)
+    out = np.full(prob_pct.shape, -1, dtype=np.int8)         # -1 = below lowest threshold
     valid = row >= 0
     rr = np.clip(row, 0, len(thr) - 1)
     looked = table[rr, cig_idx]

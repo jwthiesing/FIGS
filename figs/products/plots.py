@@ -14,19 +14,21 @@ import numpy as np
 from ..config import CATEGORY_NAMES, PRODUCTS, SPC_PROB_LEVELS
 from ..data import grid
 
-# Official SPC probabilistic-outlook fill colors, per hazard, aligned to the
-# levels in config.SPC_PROB_LEVELS.
-#   tornado : 2/5/10/15/30/45/60 %   -> green/brown/gold/red/magenta/purple/blue
-#   wind    : 5/15/30/45/60/75/90 %  -> brown/gold/red/magenta/purple/blue/indigo
-#   hail    : 5/15/30/45/60 %        -> brown/gold/red/magenta/purple
+# SPC probabilistic-outlook fill colors, per hazard, aligned to config.SPC_PROB_LEVELS.
+# The lowest level is a FIGS custom addition below the SPC levels, drawn a fainter
+# pastel of the next color (tor 1% pastel green; wind/hail 2% pastel brown).
+#   tornado : 1/2/5/10/15/30/45/60 %  -> pastelGreen/green/brown/gold/red/magenta/purple/blue
+#   wind    : 2/5/15/30/45/60/75/90 % -> pastelBrown/brown/gold/red/magenta/purple/blue/indigo
+#   hail    : 2/5/15/30/45/60 %       -> pastelBrown/brown/gold/red/magenta/purple
 PROB_COLORS = {
-    "tor": ["#008b00", "#8b4726", "#ffc800", "#ff0000", "#ff00ff", "#912cee", "#104e8b"],
-    "wind": ["#8b4726", "#ffc800", "#ff0000", "#ff00ff", "#912cee", "#104e8b", "#4b0082"],
-    "hail": ["#8b4726", "#ffc800", "#ff0000", "#ff00ff", "#912cee"],
+    "tor": ["#a6dba6", "#008b00", "#8b4726", "#ffc800", "#ff0000", "#ff00ff", "#912cee", "#104e8b"],
+    "wind": ["#d6b48c", "#8b4726", "#ffc800", "#ff0000", "#ff00ff", "#912cee", "#104e8b", "#4b0082"],
+    "hail": ["#d6b48c", "#8b4726", "#ffc800", "#ff0000", "#ff00ff", "#912cee"],
 }
 
-# Official SPC categorical-risk fill colors for levels 1..5 (MRGL/SLGT/ENH/MDT/HIGH).
-CAT_COLORS = {1: "#66a366", 2: "#ffe066", 3: "#ffa366", 4: "#e06666", 5: "#ee99ee"}
+# SPC categorical-risk fill colors. 0=TSTM uses the official SPC light green; 1..5 =
+# MRGL/SLGT/ENH/MDT/HIGH.
+CAT_COLORS = {0: "#c1e9c1", 1: "#66a366", 2: "#ffe066", 3: "#ffa366", 4: "#e06666", 5: "#ee99ee"}
 
 # EF-scale (tornado intensity) discrete palette, EF0 -> EF4+ in bin order.
 # EF4+ uses the EF4 colour (the EF5/cat5 colour A188FC is intentionally unused).
@@ -120,21 +122,22 @@ def plot_probability(prob: np.ndarray, hazard: str, title: str, out_path: str | 
 
 def plot_categorical(category: np.ndarray, hazard: str, title: str,
                      out_path: str | Path | None = None) -> str:
-    """Filled SPC categorical risk (integer levels 0..5; 0 not drawn)."""
+    """Filled SPC categorical risk (integer levels 0..5; 0=TSTM drawn, <0 = no
+    risk, not drawn)."""
     import cartopy.crs as ccrs
     import matplotlib.pyplot as plt
     from matplotlib.colors import BoundaryNorm, ListedColormap
 
     lat, lon = grid.figs_latlon()
-    cmap = ListedColormap([CAT_COLORS[i] for i in range(1, 6)])
-    norm = BoundaryNorm([0.5, 1.5, 2.5, 3.5, 4.5, 5.5], cmap.N)
-    masked = np.ma.masked_where(category < 1, category)
+    cmap = ListedColormap([CAT_COLORS[i] for i in range(0, 6)])      # 0=TSTM .. 5=HIGH
+    norm = BoundaryNorm([-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5], cmap.N)
+    masked = np.ma.masked_where(category < 0, category)             # only no-risk hidden
     fig, ax = _base_ax()
     pm = ax.pcolormesh(lon, lat, masked, cmap=cmap, norm=norm,
                        transform=ccrs.PlateCarree(), shading="auto")
     cbar = fig.colorbar(pm, ax=ax, orientation="horizontal", pad=0.03, shrink=0.8,
-                        ticks=[1, 2, 3, 4, 5])
-    cbar.ax.set_xticklabels([CATEGORY_NAMES[i] for i in range(1, 6)])
+                        ticks=[0, 1, 2, 3, 4, 5])
+    cbar.ax.set_xticklabels([CATEGORY_NAMES[i] for i in range(0, 6)])
     ax.set_title(title)
     out_path = out_path or (PRODUCTS / f"cat_{hazard}.png")
     fig.savefig(out_path, dpi=110, bbox_inches="tight")

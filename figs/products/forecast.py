@@ -8,6 +8,7 @@ render for each hazard:
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -16,12 +17,22 @@ from ..config import HAZARDS, PRODUCTS
 from . import animate, cig, plots, summary
 
 
-def render_forecast(predictions: dict, run_label: str, out_dir: str | Path | None = None) -> dict:
-    """``predictions`` maps fxx -> {'p_<h>':grid, 'dist_<h>':stack}. Returns a dict
-    of output file paths per hazard."""
+def render_forecast(predictions: dict, run, out_dir: str | Path | None = None) -> dict:
+    """``predictions`` maps fxx -> {'p_<h>':grid, 'dist_<h>':stack}. ``run`` is the
+    cycle init datetime (a ``%Y%m%d_%HZ`` string is also accepted, but datetime
+    lets titles show the full valid time). Returns output paths per hazard."""
+    if isinstance(run, str):  # back-compat: parse a "%Y%m%d_%HZ" label
+        run = datetime.strptime(run, "%Y%m%d_%HZ")
+    run_label = run.strftime("%Y%m%d_%HZ")
     out_dir = Path(out_dir) if out_dir else (PRODUCTS / run_label)
     out_dir.mkdir(parents=True, exist_ok=True)
     fxxs = sorted(predictions)
+
+    def valid(f):
+        return run + timedelta(hours=int(f))
+
+    v0, v1 = valid(fxxs[0]), valid(fxxs[-1])
+    period = f"valid {v0:%Y-%m-%d %HZ}–{v1:%Y-%m-%d %HZ}"   # full Y-M-D valid window
     results: dict[str, dict] = {}
 
     for h in HAZARDS:
@@ -36,16 +47,17 @@ def render_forecast(predictions: dict, run_label: str, out_dir: str | Path | Non
             dist = np.nan_to_num(dist_by_fxx[f])
             cig_idx = cig.derive_cig_category(h, dist)
             med = summary.median_intensity_bin(dist)
+            vlabel = f"valid {valid(f):%Y-%m-%d %HZ} (f{int(f):02d}, init {run:%Y-%m-%d %HZ})"
             probcig_frames.append(plots.plot_probability(
-                prob, h, f"{h} p+CIG f{f:02d} ({run_label})",
+                prob, h, f"{h} p+CIG — {vlabel}",
                 out_dir / f"{h}_probcig_f{f:02d}.png", cig=cig_idx))
             int_frames.append(plots.plot_intensity(
-                med, h, f"{h} median intensity f{f:02d}", out_dir / f"{h}_int_f{f:02d}.png"))
+                med, h, f"{h} median intensity — {vlabel}", out_dir / f"{h}_int_f{f:02d}.png"))
 
         # day-total: per-hazard combined prob+CIG day-max map (probabilistic).
         # The categorical outlook is NOT per-hazard — see the combined one below.
         cum = summary.cumulative_categorical(h, prob_by_fxx, {f: np.nan_to_num(dist_by_fxx[f]) for f in fxxs})
-        day_probcig = plots.plot_probability(cum["prob"], h, f"{h} day-max prob+CIG ({run_label})",
+        day_probcig = plots.plot_probability(cum["prob"], h, f"{h} day-max prob+CIG — {period}",
                                              out_dir / f"{h}_DAYMAX_probcig.png", cig=cum["cig"])
 
         results[h] = {
@@ -59,7 +71,7 @@ def render_forecast(predictions: dict, run_label: str, out_dir: str | Path | Non
     combined = summary.combined_categorical(predictions)
     results["categorical"] = {
         "day_cat": plots.plot_categorical(
-            combined["category"], "all", f"cumulative daily categorical risk ({run_label})",
+            combined["category"], "all", f"cumulative daily categorical risk — {period}",
             out_dir / "DAYMAX_categorical.png"),
     }
     return results
