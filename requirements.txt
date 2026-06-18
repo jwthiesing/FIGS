@@ -1,0 +1,32 @@
+# FIGS dependencies.
+#
+# Installed in the current env: numpy, scipy, pandas, xarray, matplotlib,
+# cartopy, metpy, requests.
+#
+# NOT yet installed (needed before the relevant milestone):
+#   - herbie-data   : HRRR retrieval from S3 (M1 fetch / M4 ensemble)
+#   - cfgrib        : GRIB2 reading backend for xarray (M1)
+#   - eccodes       : cfgrib's GRIB engine (system/conda package)
+#   - pyarrow       : parquet training matrices (M5/M6)
+#   - mlx           : Apple-Silicon array framework (M5/M6)
+#   - mlx-boosting  : GBDT on MLX (M5/M6) — fallback: lightgbm / xgboost
+
+numpy
+scipy
+pandas
+xarray
+matplotlib
+cartopy
+metpy
+requests
+
+# Retrieval / IO (install before M1 fetch + M5 training)
+herbie-data
+cfgrib
+pyarrow
+
+# Model (install before M5; fallbacks listed)
+mlx
+mlx-boosting
+# lightgbm   # fallback GBDT if mlx-boosting lacks sample weights / multiclass
+# xgboost    # fallback GBDT
