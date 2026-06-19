@@ -26,18 +26,45 @@ def _ts(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%MZ")
 
 
+def _convective_day_start(t: datetime) -> datetime:
+    """12Z that begins the SPC convective day (12Z–12Z) containing ``t``."""
+    t = t.astimezone(timezone.utc)
+    base = t if t.hour >= 12 else t - timedelta(days=1)
+    return base.replace(hour=12, minute=0, second=0, microsecond=0)
+
+
+def outlook_day_for(run: datetime, valid_time: datetime) -> int:
+    """SPC outlook day number for a forecast valid at ``valid_time`` from a cycle
+    issued at ``run`` — 1 = SPC's Day 1, 2 = Day 2, etc. Clamped to the 1–3
+    probabilistic archive range.
+
+    SPC labels as "Day 1" the convective day (12Z–12Z) beginning at **12Z on the
+    run's calendar date**, for both morning and afternoon cycles (e.g. a 06Z cycle's
+    Day 1 is the upcoming 12Z day, not the one already ending). The valid time is
+    placed in its own 12Z–12Z convective day; the difference in days + 1 is the
+    SPC day number."""
+    r = run.astimezone(timezone.utc)
+    day1_start = r.replace(hour=12, minute=0, second=0, microsecond=0)
+    vd = _convective_day_start(valid_time)
+    n = round((vd - day1_start).total_seconds() / 86400) + 1
+    return max(1, min(3, n))
+
+
 def fetch_spc_outlooks(date: datetime, *, day: int = 1, cache_dir: str | Path | None = None):
-    """Return a GeoDataFrame of SPC day-``day`` outlook polygons covering the UTC
-    convective day of ``date`` (00Z that date through 12Z the next day, so the
-    1300Z/1630Z/2000Z issuances are all included). Columns include CATEGORY,
-    THRESHOLD, PRODISS/ISSUE/EXPIRE, geometry (EPSG:4269). Cached as GeoPackage."""
+    """Return a GeoDataFrame of SPC day-``day`` outlook polygons VALID for the
+    convective day (12Z–12Z) containing ``date``. Day-N outlooks are issued ~(N-1)
+    days before they're valid, so the request window reaches back that far and
+    ``select_issuance`` then narrows to the issuance closest to the model run.
+    Columns include CATEGORY, THRESHOLD, PRODISS/ISSUE/EXPIRE, geometry
+    (EPSG:4269). Cached as GeoPackage keyed by valid convective day + day."""
     import geopandas as gpd
 
-    d0 = date.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    sts, ets = d0, d0 + timedelta(days=1, hours=12)
+    cstart = _convective_day_start(date)                # 12Z start of the valid conv day
+    sts = cstart - timedelta(hours=12, days=day - 1)    # reach back to the Day-N issuances
+    ets = cstart + timedelta(hours=24)                  # end of the valid convective day
     cache_dir = Path(cache_dir) if cache_dir else (PRODUCTS / "spc_cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache = cache_dir / f"spc_day{day}_{d0:%Y%m%d}.gpkg"
+    cache = cache_dir / f"spc_day{day}_{cstart:%Y%m%d}.gpkg"
     if cache.exists():
         return gpd.read_file(cache)
 
