@@ -109,13 +109,14 @@ case = nb(
          "    plots.plot_categorical(risk['category'], HAZARD, f'{HAZARD} categorical — valid {vt:%Y-%m-%d %HZ} (f{FH:02d})', '/tmp/_c.png')",
          "    from IPython.display import Image, display",
          "    display(Image('/tmp/_p.png')); display(Image('/tmp/_c.png'))"),
-    md("## Day-total (cumulative) risk + median intensity",
+    md("## Day-total (cumulative) risk + median / 75th / 90th-pct intensity",
        "",
        "The cumulative daily **categorical** outlook is ALWAYS across all 3 hazards "
        "(the SPC Day-1 categorical = max category over tor/wind/hail). **Day-max** "
-       "median conditional-intensity is shown for **each** hazard (per-hour median "
-       "bin, maxed over hours), masked to that hazard's threat area (day-max prob ≥ "
-       "its lowest SPC level)."),
+       "conditional-intensity is shown for **each** hazard at the **median**, the "
+       "**75th percentile**, and the **90th percentile** (per-hour percentile bin, "
+       "maxed over hours), masked to that hazard's threat area (day-max prob ≥ its "
+       "lowest SPC level)."),
     code("if preds:",
          "    from IPython.display import Image, display",
          "    # cumulative daily CATEGORICAL across ALL hazards (SPC-style Day-1 categorical)",
@@ -124,16 +125,17 @@ case = nb(
          "    combined = summary.combined_categorical(preds)",
          "    plots.plot_categorical(combined['category'], 'all', f'cumulative daily categorical (all hazards) — {period}', '/tmp/_day.png')",
          "    display(Image('/tmp/_day.png'))",
-        "    # day-MAX median conditional-intensity bin for EACH hazard: per-hour",
-         "    # median bin, then the element-wise max over hours (strongest median",
-         "    # intensity reached anywhere that day). -1 = no mass; masked below.",
+         "    # day-MAX conditional-intensity bin for EACH hazard at the median (q=0.5),",
+         "    # 75th (q=0.75) and 90th (q=0.90) percentile: per-hour percentile bin, then",
+         "    # the element-wise max over hours (strongest intensity reached anywhere that",
+         "    # day). -1 = no mass; masked to the threat area below.",
          "    for h in C.HAZARDS:",
-         "        meds = np.stack([summary.median_intensity_bin(np.nan_to_num(preds[f][f'dist_{h}'])) for f in FXX], axis=0)",
-         "        med = meds.max(axis=0)",
          "        daymax_h = summary.day_max({f: preds[f][f'p_{h}'] for f in FXX})",
-         "        med = np.where(daymax_h >= C.SPC_PROB_LEVELS[h][0], med, -1)  # threat area only",
-         "        plots.plot_intensity(med, h, f'{h} median intensity (threat area, day-max) — {period}', f'/tmp/_int_{h}.png')",
-         "        display(Image(f'/tmp/_int_{h}.png'))"),
+         "        for q, qlab in [(0.5, 'median'), (0.75, '75th pct'), (0.90, '90th pct')]:",
+         "            qb = np.stack([summary.percentile_intensity_bin(np.nan_to_num(preds[f][f'dist_{h}']), q) for f in FXX], axis=0).max(axis=0)",
+         "            qb = np.where(daymax_h >= C.SPC_PROB_LEVELS[h][0], qb, -1)  # threat area only",
+         "            plots.plot_intensity(qb, h, f'{h} {qlab} intensity (threat area, day-max) — {period}', f'/tmp/_int_{h}_{q}.png')",
+         "            display(Image(f'/tmp/_int_{h}_{q}.png'))"),
     md("## Forecast vs observed reports — overlay on the day-max probability"),
     code("import cartopy.crs as ccrs, cartopy.feature as cfeature",
          "from figs.data.grid import figs_xy, lcc_forward, figs_latlon",

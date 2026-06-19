@@ -20,10 +20,21 @@ import numpy as np
 from ..config import (
     FETCH_ISOBARIC_LEVELS,
     HRRR_CACHE,
+    HRRR_GRID,
     HRRR_LONG_CYCLES,
     HRRR_LONG_LEN,
     HRRR_SHORT_LEN,
 )
+
+# native HRRR grid shape every freshly-read 2-D field must have; a concurrent
+# byte-range fetch that truncates the GRIB can decode a field to a partial/1-D
+# array (e.g. (1799,)), which slips past key-presence checks but explodes in the
+# downstream block-average regrid — so the self-heal loops verify this shape too.
+_NATIVE_SHAPE = (HRRR_GRID.ny, HRRR_GRID.nx)
+
+
+def _is_native_2d(v) -> bool:
+    return getattr(v, "shape", None) == _NATIVE_SHAPE
 
 # Per-variable Herbie search strings (matched against GRIB .idx lines). cfgrib
 # returns a separate "hypercube" per level type, and MXUPHL comes through with a
@@ -172,16 +183,20 @@ def _with_retry(fn, *, what="fetch", tries: int = 5, base: float = 1.5):
 
 
 def _herbie(run: datetime, fxx: int, product: str):
-    """Construct a Herbie object for a run/fxx/product (lazy import)."""
+    """Construct a Herbie object for a run/fxx/product (lazy import).
+
+    Herbie probes the S3/Google sources over HTTP at construction time, so this is
+    a network call — wrap it in the transient-error retry too (a stalled probe
+    raising ``Read timed out`` would otherwise escape the read paths' retries)."""
     from herbie import Herbie
 
-    return Herbie(
+    return _with_retry(lambda: Herbie(
         run.strftime("%Y-%m-%d %H:%M"),
         model="hrrr",
         product=product,   # 'prs' or 'sfc'
         fxx=fxx,
         save_dir=str(HRRR_CACHE),
-    )
+    ), what="herbie-init")
 
 
 def _open(H, search, overwrite: bool = False):
@@ -236,6 +251,7 @@ def isobaric_cube(run: datetime, fxx: int, regrid=None) -> dict[str, np.ndarray]
     for attempt in range(3):
         out: dict[str, np.ndarray] = {}
         levels = None
+        malformed = []  # vars whose native levels weren't full (ny, nx) -> refetch
         for ds in _open(H, PRS_SEARCH, overwrite=(attempt > 0)):
             if "isobaricInhPa" not in ds.coords:
                 ds.close()
@@ -247,6 +263,12 @@ def isobaric_cube(run: datetime, fxx: int, regrid=None) -> dict[str, np.ndarray]
                 if key is None:
                     continue
                 native = np.asarray(ds[var].values, dtype=np.float32)[order]
+                # verify each level is the full native grid BEFORE regridding —
+                # else a truncated level would make block_average raise instead of
+                # letting this loop self-heal with a fresh fetch.
+                if native.ndim != 3 or native.shape[1:] != _NATIVE_SHAPE:
+                    malformed.append((key, native.shape))
+                    continue
                 if regrid is not None:
                     out[key] = np.stack([regrid(native[i]) for i in range(native.shape[0])],
                                         axis=0).astype(np.float32)
@@ -258,10 +280,10 @@ def isobaric_cube(run: datetime, fxx: int, regrid=None) -> dict[str, np.ndarray]
             ds.close()  # release cfgrib/xarray handles + memory promptly
         nlev = 0 if levels is None else len(levels)
         short = [k for k, v in out.items() if v.shape[0] != nlev]
-        if levels is not None and not short:
+        if levels is not None and not short and not malformed:
             out["levels"] = levels
             return out
-        last_bad = f"levels={nlev}, short-vars={short}"
+        last_bad = f"levels={nlev}, short-vars={short}, malformed={malformed}"
         print(f"[warn] truncated isobaric read {run:%Y-%m-%d %H}Z f{fxx:02d} "
               f"({last_bad}); re-fetching (attempt {attempt + 1}/3)", flush=True)
     raise RuntimeError(f"isobaric_cube {run:%Y-%m-%d %H}Z f{fxx:02d}: incomplete after "
@@ -341,11 +363,13 @@ def surface_fields_combined(run: datetime, fxx: int) -> dict[str, np.ndarray]:
         finally:
             for ds in dss:
                 ds.close()
-        missing = [k for k in _SFC_REQUIRED if k not in out]
+        # a field present but truncated to a non-native shape (e.g. (1799,)) is as
+        # unusable as a missing one — it would explode in block_average downstream.
+        missing = [k for k in _SFC_REQUIRED if not _is_native_2d(out.get(k))]
         if not missing:
             break
         print(f"[warn] truncated surface read {run:%Y-%m-%d %H}Z f{fxx:02d} "
-              f"(missing {missing}); re-fetching (attempt {attempt + 1}/3)", flush=True)
+              f"(missing/malformed {missing}); re-fetching (attempt {attempt + 1}/3)", flush=True)
     if missing:
         raise RuntimeError(f"surface_fields_combined {run:%Y-%m-%d %H}Z f{fxx:02d}: missing "
                            f"{missing} after 3 fetches; reduce predict --workers")

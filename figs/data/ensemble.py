@@ -36,6 +36,16 @@ from ..config import (
 )
 from . import grid, hrrr_store
 
+# A member field must be the full native HRRR grid before block-averaging. A
+# concurrent byte-range read can truncate a non-essential field to a partial/1-D
+# array; essentials self-heal upstream, but here we simply skip a malformed
+# optional field so one bad member doesn't crash the whole forecast hour.
+_NATIVE_SHAPE = (grid.HRRR_GRID.ny, grid.HRRR_GRID.nx)
+
+
+def _native(v) -> bool:
+    return v is not None and getattr(v, "shape", None) == _NATIVE_SHAPE
+
 
 def _member_state(run: datetime, fxx: int):
     """Fetch one member: regridded ensemble-input fields. Returns (iso15, sfc15,
@@ -49,12 +59,12 @@ def _member_state(run: datetime, fxx: int):
     sfc15 = {}
     det_sfc = ("psfc", "zsfc", "t2m", "td2m", "u10", "v10") + tuple(SURFACE_POINT_FIELDS)
     for k in det_sfc:
-        if sfc.get(k) is not None:
+        if _native(sfc.get(k)):
             sfc15[k] = grid.block_average(sfc[k]).astype(np.float32)
     # probability source fields use block-MAX (local maxima)
     prob_src = {}
     for k in ("refc", "refd", "uh03", "uh25"):
-        if sfc.get(k) is not None:
+        if _native(sfc.get(k)):
             prob_src[k] = grid.block_max(sfc[k]).astype(np.float32)
     del sfc  # free native surface fields promptly
     return iso15, sfc15, prob_src
@@ -83,7 +93,7 @@ def _probability_fields(prob_src_members: list[dict]) -> dict[str, np.ndarray]:
 def _member_prob_src(run: datetime, fxx: int) -> dict:
     """Lagged-member contribution: ONLY the block-MAX reflectivity/UH fields."""
     sfc = hrrr_store.surface_prob_fields(run, fxx)
-    return {k: grid.block_max(v).astype(np.float32) for k, v in sfc.items()}
+    return {k: grid.block_max(v).astype(np.float32) for k, v in sfc.items() if _native(v)}
 
 
 def assemble_inputs(valid_time: datetime, max_members: int = ENSEMBLE_MAX_MEMBERS,

@@ -23,17 +23,23 @@ def day_max(grids_by_fxx: dict[int, np.ndarray]) -> np.ndarray:
     return np.nanmax(stack, axis=0)
 
 
-def median_intensity_bin(dist_stack: np.ndarray) -> np.ndarray:
-    """Median conditional-intensity bin index from a (nbins, ny, nx) distribution
-    (the smallest bin where the cumulative probability reaches 0.5). Cells with no
-    mass return -1."""
+def percentile_intensity_bin(dist_stack: np.ndarray, q: float = 0.5) -> np.ndarray:
+    """Quantile conditional-intensity bin index from a (nbins, ny, nx) distribution
+    — the smallest bin where the cumulative probability reaches ``q`` (q=0.5 is the
+    median, q=0.75 the 75th percentile). Cells with no mass return -1."""
     s = dist_stack.sum(axis=0)
     cdf = np.cumsum(dist_stack, axis=0)
     total = np.where(s <= 0, 1.0, s)
     cdf = cdf / total
-    med = np.argmax(cdf >= 0.5, axis=0).astype(np.int16)
-    med[s <= 0] = -1
-    return med
+    out = np.argmax(cdf >= q, axis=0).astype(np.int16)
+    out[s <= 0] = -1
+    return out
+
+
+def median_intensity_bin(dist_stack: np.ndarray) -> np.ndarray:
+    """Median (50th-percentile) conditional-intensity bin — see
+    ``percentile_intensity_bin``."""
+    return percentile_intensity_bin(dist_stack, 0.5)
 
 
 def cumulative_categorical(
