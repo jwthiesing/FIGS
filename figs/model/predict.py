@@ -10,10 +10,24 @@ hazard's distribution spans its full bin set.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 from pathlib import Path
 
 import numpy as np
+
+
+@contextlib.contextmanager
+def _quiet_stdout():
+    """Silence stdout for the wrapped block (Herbie's '✅ Found …' banners and
+    cfgrib's 'Note: Returning a list …' prints). Used around the download/assemble
+    work so the only thing reaching the user is our own progress line. Warnings go
+    to STDERR, so they (and our stderr diagnostics) survive this redirect. Set once
+    around the whole assemble call — never toggled mid-call — so it's safe even with
+    the concurrent member-fetch threads inside."""
+    with open(os.devnull, "w") as devnull, contextlib.redirect_stdout(devnull):
+        yield
 
 from ..config import (
     FIGS_DX_KM,
@@ -179,12 +193,16 @@ def _forecast_worker(fxx):
     full core. Returns only the small prediction grids (cheap to ship back)."""
     from datetime import timedelta
 
-    vt = _WORKER["run"] + timedelta(hours=int(fxx))
-    X, shape = _feature_matrix(vt, _WORKER["feat_cols"], _WORKER["max_members"],
-                               _WORKER["temporal"], as_of=_WORKER["run"])
+    f = int(fxx)
+    vt = _WORKER["run"] + timedelta(hours=f)
+    print(f"[predict] f{f:02d}: downloading + preprocessing…", flush=True)
+    with _quiet_stdout():                          # mute Herbie/cfgrib chatter, keep our lines
+        X, shape = _feature_matrix(vt, _WORKER["feat_cols"], _WORKER["max_members"],
+                                   _WORKER["temporal"], as_of=_WORKER["run"])
+    print(f"[predict] f{f:02d}: preprocessed ✓ — predicting", flush=True)
     out = _predict_from_matrix(X, shape, _WORKER["models"], _WORKER["tags"])
     del X
-    return int(fxx), out
+    return f, out
 
 
 def predict_forecast(run, fxx_list, models_dir=None, *, max_members=6, temporal=False,
@@ -207,17 +225,22 @@ def predict_forecast(run, fxx_list, models_dir=None, *, max_members=6, temporal=
     fxxs = [int(f) for f in fxx_list]
     workers = max(1, int(workers))
 
+    n = len(fxxs)
     if workers == 1:                               # serial, in-process (no pool overhead)
         models = _load_band_models(models_dir, tags)
         out: dict = {}
-        for fxx in fxxs:
+        for done, fxx in enumerate(fxxs, 1):
             vt = run + timedelta(hours=fxx)
-            X, shape = _feature_matrix(vt, feat_cols, max_members, temporal, as_of=run)
+            print(f"[predict] f{fxx:02d}: downloading + preprocessing…", flush=True)
+            with _quiet_stdout():                  # mute Herbie/cfgrib chatter, keep our lines
+                X, shape = _feature_matrix(vt, feat_cols, max_members, temporal, as_of=run)
+            print(f"[predict] f{fxx:02d}: preprocessed ✓ — predicting", flush=True)
             out[fxx] = _predict_from_matrix(X, shape, models, tags)
             del X
+            print(f"[predict] {done}/{n} ({100 * done // n}%) complete — f{fxx:02d} done", flush=True)
         return out
 
-    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures import ProcessPoolExecutor, as_completed
 
     max_tasks = int(os.environ.get("FIGS_MAX_TASKS_PER_CHILD", "16"))
     pool_kwargs = {"max_workers": workers,
@@ -230,8 +253,13 @@ def predict_forecast(run, fxx_list, models_dir=None, *, max_members=6, temporal=
         pass
     out = {}
     with ProcessPoolExecutor(**pool_kwargs) as ex:
-        for fxx, pred in ex.map(_forecast_worker, fxxs):
+        # as_completed (not ex.map) so progress prints the instant EACH hour finishes,
+        # rather than batching in submission order when an early hour lags behind.
+        futs = [ex.submit(_forecast_worker, f) for f in fxxs]
+        for done, fut in enumerate(as_completed(futs), 1):
+            fxx, pred = fut.result()
             out[fxx] = pred
+            print(f"[predict] {done}/{n} ({100 * done // n}%) complete — f{fxx:02d} done", flush=True)
     return out
 
 

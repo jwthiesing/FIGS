@@ -12,10 +12,31 @@ Two product files are used:
 
 from __future__ import annotations
 
+import sys
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
+
+# cfgrib opens GRIB subsets via xr.merge() without an explicit ``compat`` (it is
+# combining the level-type "hypercubes"), which emits a FutureWarning under recent
+# xarray. The merge is internal to cfgrib, so we silence that one warning here —
+# at module import, so it also applies inside the predict/build worker PROCESSES,
+# where the notebook's top-level warnings filter does not reach.
+warnings.filterwarnings(
+    "ignore",
+    message=r"In a future version of xarray the default value for compat",
+    category=FutureWarning,
+)
+# Herbie matches the idx search with pandas str.contains(); our searches contain
+# regex groups (e.g. ":(TMP|DPT|...):(...) mb:"), which makes pandas emit a
+# UserWarning about match groups on every fetch. The grouping is intentional.
+warnings.filterwarnings(
+    "ignore",
+    message=r"This pattern is interpreted as a regular expression, and has match groups",
+    category=UserWarning,
+)
 
 from ..config import (
     FETCH_ISOBARIC_LEVELS,
@@ -178,7 +199,7 @@ def _with_retry(fn, *, what="fetch", tries: int = 5, base: float = 1.5):
                 raise
             wait = base * (2 ** i)
             print(f"[warn] transient {what} error ({msg.splitlines()[0][:80]}); "
-                  f"retry {i + 1}/{tries - 1} in {wait:.0f}s", flush=True)
+                  f"retry {i + 1}/{tries - 1} in {wait:.0f}s", file=sys.stderr, flush=True)
             time.sleep(wait)
 
 
@@ -196,6 +217,7 @@ def _herbie(run: datetime, fxx: int, product: str):
         product=product,   # 'prs' or 'sfc'
         fxx=fxx,
         save_dir=str(HRRR_CACHE),
+        verbose=False,     # suppress the "✅ Found ┊ …" banner per fetch
     ), what="herbie-init")
 
 
@@ -206,7 +228,8 @@ def _open(H, search, overwrite: bool = False):
     byte-range read — see ``isobaric_cube``)."""
     if overwrite:
         try:
-            _with_retry(lambda: H.download(search, overwrite=True), what="download")
+            _with_retry(lambda: H.download(search, overwrite=True, verbose=False),
+                        what="download")
         except Exception:  # noqa: BLE001 - fall through to xarray's own fetch
             pass
     res = _with_retry(lambda: H.xarray(search, remove_grib=False), what="xarray")
@@ -218,7 +241,7 @@ def _single_field(H, search) -> np.ndarray:
     squeezing any singleton level dimension. Raises KeyError if the search
     matches no GRIB messages (checked via the idx inventory to avoid Herbie/cfgrib
     erroring on an empty subset download)."""
-    if len(_with_retry(lambda: H.inventory(search), what="inventory")) == 0:
+    if len(_with_retry(lambda: H.inventory(search, verbose=False), what="inventory")) == 0:
         raise KeyError(f"no idx match for search {search!r}")
     dss = _open(H, search)
     try:
@@ -285,7 +308,7 @@ def isobaric_cube(run: datetime, fxx: int, regrid=None) -> dict[str, np.ndarray]
             return out
         last_bad = f"levels={nlev}, short-vars={short}, malformed={malformed}"
         print(f"[warn] truncated isobaric read {run:%Y-%m-%d %H}Z f{fxx:02d} "
-              f"({last_bad}); re-fetching (attempt {attempt + 1}/3)", flush=True)
+              f"({last_bad}); re-fetching (attempt {attempt + 1}/3)", file=sys.stderr, flush=True)
     raise RuntimeError(f"isobaric_cube {run:%Y-%m-%d %H}Z f{fxx:02d}: incomplete after "
                        f"3 fetches ({last_bad}); reduce predict --workers")
 
@@ -297,6 +320,22 @@ _SFC_SCALAR = {
     "mcc": "mcdc", "crain": "crain", "cfrzr": "cfrzr", "cicep": "cicep",
     "csnow": "csnow", "sp": "psfc", "orog": "zsfc",
 }
+
+
+def _iter_levels(da, tol):
+    """Yield (level_value, 2-D field) for each level of ``da`` along level-type
+    ``tol``. A truncated byte-range read can decode just one level, in which case
+    cfgrib collapses ``tol`` from a dimension to a scalar coordinate — then
+    ``da.isel({tol: i})`` raises "Dimensions {...} do not exist". Handle both: if
+    ``tol`` is still a dimension, iterate it (using the array's OWN coord so the
+    index can't run past a short read); if it collapsed to a scalar coord, the
+    array already IS the single level."""
+    if tol in getattr(da, "dims", ()):
+        vals = np.atleast_1d(da[tol].values)
+        for i, lv in enumerate(vals):
+            yield float(lv), da.isel({tol: i})
+    elif tol in getattr(da, "coords", ()):
+        yield float(np.atleast_1d(da[tol].values)[0]), da
 
 
 def _map_surface(dss) -> dict[str, np.ndarray]:
@@ -321,24 +360,21 @@ def _map_surface(dss) -> dict[str, np.ndarray]:
             elif name == "cin" and tol == "surface":
                 out["hrrr_sbcin"] = np.squeeze(a(da))
             elif name in ("cape", "cin") and tol == "pressureFromGroundLayer":
-                levs = np.atleast_1d(ds[tol].values)
                 key = "mlcape" if name == "cape" else "mlcin"
-                for i, p in enumerate(levs):
-                    out[f"hrrr_{key}{int(round(float(p))) // 100}"] = np.squeeze(a(da.isel({tol: i})))
+                for p, lvl in _iter_levels(da, tol):
+                    out[f"hrrr_{key}{int(round(p)) // 100}"] = np.squeeze(a(lvl))
             elif name == "unknown" and tol == "heightAboveGroundLayer":  # MXUPHL
-                levs = np.atleast_1d(ds[tol].values)
-                for i, top in enumerate(levs):
-                    if int(round(float(top))) == 3000:
-                        out["uh03"] = np.squeeze(a(da.isel({tol: i})))
-                    elif int(round(float(top))) == 5000:
-                        out["uh25"] = np.squeeze(a(da.isel({tol: i})))
+                for top, lvl in _iter_levels(da, tol):
+                    if int(round(top)) == 3000:
+                        out["uh03"] = np.squeeze(a(lvl))
+                    elif int(round(top)) == 5000:
+                        out["uh25"] = np.squeeze(a(lvl))
             elif name == "max_vo" and tol == "heightAboveGroundLayer":  # RELV
-                levs = np.atleast_1d(ds[tol].values)
-                for i, top in enumerate(levs):
-                    if int(round(float(top))) == 1000:
-                        out["relv01"] = np.squeeze(a(da.isel({tol: i})))
-                    elif int(round(float(top))) == 2000:
-                        out["relv02"] = np.squeeze(a(da.isel({tol: i})))
+                for top, lvl in _iter_levels(da, tol):
+                    if int(round(top)) == 1000:
+                        out["relv01"] = np.squeeze(a(lvl))
+                    elif int(round(top)) == 2000:
+                        out["relv02"] = np.squeeze(a(lvl))
     return out
 
 
@@ -360,6 +396,13 @@ def surface_fields_combined(run: datetime, fxx: int) -> dict[str, np.ndarray]:
         dss = _open(H, combined, overwrite=(attempt > 0))
         try:
             out = _map_surface(dss)
+        except Exception as e:  # noqa: BLE001 - a truncated read can make the level
+            # mapping itself raise (e.g. a collapsed level dim); treat as a failed
+            # attempt so the loop re-fetches rather than crashing the forecast.
+            out = {}
+            print(f"[warn] surface read parse failed {run:%Y-%m-%d %H}Z f{fxx:02d} "
+                  f"({type(e).__name__}: {str(e).splitlines()[0][:80]}); re-fetching "
+                  f"(attempt {attempt + 1}/3)", file=sys.stderr, flush=True)
         finally:
             for ds in dss:
                 ds.close()
@@ -369,7 +412,8 @@ def surface_fields_combined(run: datetime, fxx: int) -> dict[str, np.ndarray]:
         if not missing:
             break
         print(f"[warn] truncated surface read {run:%Y-%m-%d %H}Z f{fxx:02d} "
-              f"(missing/malformed {missing}); re-fetching (attempt {attempt + 1}/3)", flush=True)
+              f"(missing/malformed {missing}); re-fetching (attempt {attempt + 1}/3)",
+              file=sys.stderr, flush=True)
     if missing:
         raise RuntimeError(f"surface_fields_combined {run:%Y-%m-%d %H}Z f{fxx:02d}: missing "
                            f"{missing} after 3 fetches; reduce predict --workers")

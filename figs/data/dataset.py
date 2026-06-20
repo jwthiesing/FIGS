@@ -43,7 +43,8 @@ def _progress(done: int, total: int, t0: float, label: str):
     elapsed = time.time() - t0
     rate = elapsed / max(done, 1)
     eta = rate * (total - done)
-    print(f"  [{done}/{total}] {label} | {_fmt_eta(elapsed)} elapsed, "
+    pct = 100 * done // max(total, 1)
+    print(f"  [{done}/{total}] ({pct}%) {label} | {_fmt_eta(elapsed)} elapsed, "
           f"ETA {_fmt_eta(eta)} (~{rate:.0f}s/sample) | free disk {_disk_free_gb():.0f} GB",
           flush=True)
 

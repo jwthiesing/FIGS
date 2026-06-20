@@ -62,10 +62,13 @@ def fetch_spc_outlooks(date: datetime, *, day: int = 1, cache_dir: str | Path | 
     cstart = _convective_day_start(date)                # 12Z start of the valid conv day
     sts = cstart - timedelta(hours=12, days=day - 1)    # reach back to the Day-N issuances
     ets = cstart + timedelta(hours=24)                  # end of the valid convective day
+    # If the convective day hasn't ended yet, SPC is still issuing updates for it, so a
+    # cached copy may be stale (e.g. fetched before today's Day 1 was out) — bypass it.
+    in_progress = ets > datetime.now(timezone.utc)
     cache_dir = Path(cache_dir) if cache_dir else (PRODUCTS / "spc_cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache = cache_dir / f"spc_day{day}_{cstart:%Y%m%d}.gpkg"
-    if cache.exists():
+    if cache.exists() and not in_progress:
         return gpd.read_file(cache)
 
     import requests
@@ -78,26 +81,44 @@ def fetch_spc_outlooks(date: datetime, *, day: int = 1, cache_dir: str | Path | 
         shp = next(p for p in Path(td).iterdir() if p.suffix == ".shp")
         g = gpd.read_file(shp)
     g = g[g.geometry.notna()].copy()
-    if len(g):
+    if len(g) and not in_progress:      # don't persist a still-updating day's partial set
         g.to_file(cache, driver="GPKG")
     return g
 
 
-def select_issuance(gdf, target: datetime):
-    """Keep only the single outlook issuance whose ISSUE time is closest to
-    ``target`` (e.g. the model run hour) — so we compare against the outlook SPC
-    actually had out for that cycle, not a blend of all daily updates."""
+def select_issuance(gdf, target: datetime, valid_time: datetime | None = None):
+    """Keep only the single outlook issuance closest to ``target`` (the model run).
+
+    When ``valid_time`` is given, FIRST restrict to the outlooks actually valid for
+    that forecast's convective day (identified by ``EXPIRE`` = 12Z at the day's
+    end). Without this, an early-morning run snaps to the *previous* day's tail
+    update (the 01Z/06Z outlook) merely because it is closest in time — that
+    outlook is for the prior convective day, not the one being forecast."""
     if gdf is None or len(gdf) == 0 or "ISSUE" not in gdf.columns:
         return gdf
+
+    g = gdf
+    if valid_time is not None and "EXPIRE" in gdf.columns:
+        import pandas as pd
+
+        cend = _convective_day_start(valid_time) + timedelta(hours=24)  # 12Z conv-day end
+        exp = pd.to_datetime(gdf["EXPIRE"].astype(str), format="%Y%m%d%H%M",
+                             errors="coerce", utc=True)
+        if exp.notna().any():                   # EXPIRE parsed -> trust the valid-day filter
+            # Keep ONLY the outlooks valid for the forecast's convective day. If that
+            # leaves nothing (e.g. SPC hasn't issued today's Day 1 yet), return empty —
+            # a blank panel is correct, where snapping to the previous day's outlook is not.
+            g = gdf[exp.dt.strftime("%Y%m%d") == cend.strftime("%Y%m%d")]
+
     tgt = target.astimezone(timezone.utc).strftime("%Y%m%d%H%M")
 
     def _key(s):
         return abs(int(s) - int(tgt))
 
-    issues = sorted(gdf["ISSUE"].dropna().unique(), key=_key)
+    issues = sorted(g["ISSUE"].dropna().unique(), key=_key)
     if not issues:
-        return gdf
-    return gdf[gdf["ISSUE"] == issues[0]].copy()
+        return g
+    return g[g["ISSUE"] == issues[0]].copy()
 
 
 def plot_spc_outlook(ax, gdf, hazard: str, colors, *, sign_hatch: bool = True):
@@ -125,8 +146,12 @@ def plot_spc_outlook(ax, gdf, hazard: str, colors, *, sign_hatch: bool = True):
     for thr, color in zip(levels, colors):                 # low -> high (higher on top)
         layer = sub[sub["THRESHOLD"] == f"{thr:.2f}"]
         if len(layer):
+            # opaque (alpha=1) to match the FIGS panel's contourf fill, and zorder=1 so
+            # the state borders (cartopy STATES default zorder 1.5) draw OVER the fill —
+            # add_geometries defaults to 1.5 (== STATES) and would otherwise hide them,
+            # while the FIGS contourf is zorder 1 and lets the borders bleed through.
             ax.add_geometries(layer.geometry, crs=pc, facecolor=color,
-                              edgecolor="0.3", linewidth=0.4, alpha=0.85)
+                              edgecolor="0.3", linewidth=0.4, alpha=1.0, zorder=1)
             drawn += len(layer)
     if sign_hatch:
         # new-system CIG tiers (FIGS hatch patterns) + legacy single SIGN area

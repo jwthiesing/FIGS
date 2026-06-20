@@ -224,7 +224,7 @@ case = nb(
          "# actual SPC outlook contours from IEM (vector), valid conv day = vmid, issuance closest to RUN",
          "spc_gdf = None",
          "try:",
-         "    spc_gdf = spc.select_issuance(spc.fetch_spc_outlooks(vmid, day=spc_day), RUN)",
+         "    spc_gdf = spc.select_issuance(spc.fetch_spc_outlooks(vmid, day=spc_day), RUN, valid_time=vmid)",
          "except Exception as e:",
          "    print('SPC outlook fetch failed:', e)",
          "spc_iss = (sorted(spc_gdf['ISSUE'].unique())[0] if spc_gdf is not None and len(spc_gdf) else 'n/a')",
