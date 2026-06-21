@@ -59,6 +59,14 @@ def cmd_build_data(args):
                            flush_every=args.flush_every)
 
 
+def cmd_augment_data(args):
+    from .data.dataset import augment_features
+
+    target = augment_features(args.parquet, max_members=args.members,
+                              temporal=args.temporal, workers=args.workers)
+    print(f"augmented dataset: {target}")
+
+
 def cmd_train(args):
     import json
 
@@ -123,6 +131,18 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--min-free-gb", type=float, default=50.0,
                    help="stop the build if free disk drops below this (GB)")
     b.set_defaults(func=cmd_build_data)
+
+    a = sub.add_parser("augment-data",
+                       help="add new feature columns (lapse rates + surface-boundary "
+                            "gradients) to an existing parquet, reusing the GRIB cache "
+                            "(no re-download, existing columns untouched)")
+    a.add_argument("--parquet", required=True, help="existing dataset (parquet file or parts dir)")
+    a.add_argument("--members", type=int, default=6)
+    a.add_argument("--temporal", action="store_true",
+                   help="also add _prev/_next variants (MUST match how the parquet was built)")
+    a.add_argument("--workers", type=int, default=1,
+                   help="(valid_time,fxx) samples assembled concurrently in separate processes")
+    a.set_defaults(func=cmd_augment_data)
 
     t = sub.add_parser("train", help="train models from a parquet matrix")
     t.add_argument("--parquet", required=True)

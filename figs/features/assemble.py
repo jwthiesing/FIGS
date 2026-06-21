@@ -16,7 +16,17 @@ from __future__ import annotations
 import numpy as np
 
 from ..config import KINEMATIC_LEVELS, MANDATORY_HGT_LEVELS, SURFACE_POINT_FIELDS
-from . import hodograph, kinematics, motions, profiles, spatial, sr_params, thermo
+from . import (
+    boundaries,
+    hodograph,
+    kinematics,
+    lapse,
+    motions,
+    profiles,
+    spatial,
+    sr_params,
+    thermo,
+)
 
 
 def _level_winds(prof: profiles.Profiles) -> dict[float, tuple[np.ndarray, np.ndarray]]:
@@ -119,6 +129,11 @@ def compute_features(iso: dict, sfc: dict,
     # fine profile point features (TMP/DPT/spread/VVEL)
     feats.update(_profile_point_features(prof))
 
+    # lapse rates (SR layers + 6-9 km) and surface-boundary gradients — both are
+    # non-motion scalars given the Tier-1 spatial treatment below.
+    feats.update(lapse.lapse_rate_features(prof))
+    feats.update(boundaries.boundary_features(sfc))
+
     # geopotential height at mandatory levels
     feats.update(_mandatory_hgt_features(iso))
 
@@ -156,8 +171,11 @@ def compute_features(iso: dict, sfc: dict,
         prob_names = list(prob_fields.keys())
 
     # Tier 1: non-motion environmental scalars -> means + gradients vs ALL motions.
-    # (incl. T/Td at the levels we carry, and the ensemble probability fields).
-    tier1_names = list(SPATIAL_BASE_FIELDS) + _tmp_dpt_spatial_names() + prob_names
+    # (incl. T/Td at the levels we carry, lapse rates, surface-boundary gradients,
+    # and the ensemble probability fields).
+    tier1_names = (list(SPATIAL_BASE_FIELDS) + _tmp_dpt_spatial_names()
+                   + lapse.lapse_feature_names() + boundaries.boundary_feature_names()
+                   + prob_names)
     base_fields = {name: feats[name] for name in tier1_names if name in feats}
     feats.update(spatial.spatial_features(base_fields, mvecs))
 
@@ -190,6 +208,30 @@ def compute_features(iso: dict, sfc: dict,
     feats.update(tier2_spatial)
 
     return feats
+
+
+def added_features(iso: dict, sfc: dict) -> dict[str, np.ndarray]:
+    """Compute ONLY the newer feature families (lapse rates + surface-boundary
+    gradients) AND their Tier-1 spatial expansion (means + all-motion gradients).
+
+    This mirrors exactly what ``compute_features`` adds for these families, but
+    skips the ~5,000 existing features — so an existing parquet can be augmented in
+    place (recomputed from the cached GRIB) without re-deriving everything. Returns
+    a dict of (ny, nx) grids."""
+    prof = profiles.build_profiles(iso, sfc)
+    mvecs = motions.all_motions(prof)
+
+    pts: dict[str, np.ndarray] = {}
+    pts.update(lapse.lapse_rate_features(prof))
+    pts.update(boundaries.boundary_features(sfc))
+
+    out = dict(pts)
+    # Tier-1 spatial treatment for the lapse + boundary scalars (same as in
+    # compute_features: means at every radius + all-motion directional gradients).
+    base = {k: pts[k] for k in (lapse.lapse_feature_names()
+                                + boundaries.boundary_feature_names()) if k in pts}
+    out.update(spatial.spatial_features(base, mvecs))
+    return out
 
 
 def to_array(feats: dict[str, np.ndarray]) -> tuple[list[str], np.ndarray]:

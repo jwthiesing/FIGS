@@ -96,6 +96,29 @@ def _member_prob_src(run: datetime, fxx: int) -> dict:
     return {k: grid.block_max(v).astype(np.float32) for k, v in sfc.items() if _native(v)}
 
 
+def main_member_iso_sfc(valid_time: datetime, max_members: int = ENSEMBLE_MAX_MEMBERS,
+                        as_of: datetime | None = None, *, cached_only: bool = False):
+    """Return ``(iso15, sfc15)`` for ONLY the main (most-recent) member — the
+    deterministic state the lapse/boundary augment features need. Skips the lagged
+    members and the ensemble probability fields entirely (so ~1/6th the reads), and
+    with ``cached_only`` does the GRIB reads with NO remote probe (cache-only) —
+    used to augment an existing dataset cheaply without re-downloading or re-checking
+    files we already have."""
+    members = hrrr_store.recent_runs_for_valid(valid_time, max_members, as_of=as_of)
+    if not members:
+        raise RuntimeError(f"no ensemble members for valid {valid_time}")
+    main = members[0]
+    iso15 = hrrr_store.isobaric_cube(main.run, main.fxx, regrid=grid.block_average,
+                                     cached_only=cached_only)
+    sfc = hrrr_store.surface_fields_combined(main.run, main.fxx, cached_only=cached_only)
+    sfc15 = {}
+    det_sfc = ("psfc", "zsfc", "t2m", "td2m", "u10", "v10") + tuple(SURFACE_POINT_FIELDS)
+    for k in det_sfc:
+        if _native(sfc.get(k)):
+            sfc15[k] = grid.block_average(sfc[k]).astype(np.float32)
+    return iso15, sfc15
+
+
 def assemble_inputs(valid_time: datetime, max_members: int = ENSEMBLE_MAX_MEMBERS,
                     as_of: datetime | None = None) -> dict:
     """Build the input state for ``valid_time``.

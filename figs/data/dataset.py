@@ -493,6 +493,129 @@ def build_dataset_for_runs(
     return out_path
 
 
+def _added_columns_for_group(valid_time: datetime, fxx: int, iy: np.ndarray, ix: np.ndarray,
+                             max_members: int, temporal: bool):
+    """Compute the newly-added feature families for ONE (valid_time, fxx) sample and
+    sample them at the stored cells. Re-assembles the ensemble from the cached GRIB
+    (``as_of = valid_time − fxx``) — no re-download — and runs only
+    ``assemble.added_features`` (not the full ~5k feature set).
+
+    Returns ``(names, block)``: the sorted column names and a single contiguous
+    ``(len(iy), n_features)`` float32 array. One array (not ~980 separate arrays)
+    keeps the cross-process pickle/IPC and the main-process merge cheap — otherwise
+    shipping a dict-of-arrays per group bottlenecks the parent and starves workers."""
+    as_of = valid_time - timedelta(hours=int(fxx))
+
+    def one(vt):
+        # only the MAIN member's iso/sfc are needed for lapse/boundary features, and
+        # they're read cache-only (no remote Herbie probe) since the dataset's GRIB
+        # subsets are already downloaded — far fewer file checks than a full assemble.
+        iso15, sfc15 = ensemble.main_member_iso_sfc(vt, max_members, as_of=as_of,
+                                                    cached_only=True)
+        return assemble.added_features(iso15, sfc15)
+
+    grids = one(valid_time)
+    if temporal:                                   # match a temporally-built parquet
+        for suf, dt in (("_prev", -1), ("_next", 1)):
+            for k, g in one(valid_time + timedelta(hours=dt)).items():
+                grids[f"{k}{suf}"] = g
+    names = sorted(grids)
+    block = np.empty((len(iy), len(names)), dtype=np.float32)
+    for j, n in enumerate(names):
+        block[:, j] = grids[n][iy, ix]
+    return names, block
+
+
+def _augment_worker(task):
+    """Pool entry point: unpack a group task and return ``(names, block)`` (one
+    contiguous array). A failed group (e.g. a GRIB subset missing from the cache)
+    returns ``(None, None)`` so those rows stay NaN rather than aborting the augment."""
+    vt, fxx, iy, ix, max_members, temporal = task
+    try:
+        return _added_columns_for_group(vt, fxx, iy, ix, max_members, temporal)
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] augment group {vt:%Y-%m-%d %H}Z f{int(fxx):02d} failed "
+              f"({type(e).__name__}: {str(e).splitlines()[0][:80]}); rows left NaN",
+              flush=True)
+        return None, None
+
+
+def augment_features(path: str, *, max_members: int = 6, temporal: bool = False,
+                     workers: int = 1) -> str:
+    """Add the new feature families (lapse rates + surface-boundary gradients) to an
+    EXISTING dataset IN PLACE, recomputing ONLY those columns from the cached GRIB.
+
+    The existing ~5k feature columns are left untouched (no re-preprocessing) and
+    nothing is re-downloaded — each (valid_time, fxx) sample's ensemble is
+    re-assembled from the local GRIB cache and the new features sampled at the
+    stored (iy, ix) cells. Each part-file is rewritten with the extra columns.
+    Re-run training afterward to pick them up (``feature_columns`` will include them).
+
+    ``temporal`` must match how the parquet was built (adds ``_prev``/``_next``)."""
+    import os
+    from concurrent.futures import ProcessPoolExecutor
+    from pathlib import Path
+
+    target = _dataset_target(path)
+    parts = sorted(Path(target).glob("*.parquet")) if Path(target).is_dir() else [Path(target)]
+    if not parts:
+        raise FileNotFoundError(f"no parquet part-files under {target}")
+    workers = max(1, int(workers))
+    t0 = time.time()
+    print(f"augmenting {len(parts)} part-file(s) with new features "
+          f"({'temporal, ' if temporal else ''}{workers} worker(s))", flush=True)
+
+    pool = None
+    if workers > 1:
+        max_tasks = int(os.environ.get("FIGS_MAX_TASKS_PER_CHILD", "16"))
+        try:
+            ProcessPoolExecutor(max_workers=1, max_tasks_per_child=1).shutdown()
+            pool = ProcessPoolExecutor(max_workers=workers, max_tasks_per_child=max_tasks)
+        except TypeError:
+            pool = ProcessPoolExecutor(max_workers=workers)
+    try:
+        total_groups = done_groups = 0
+        for pi, p in enumerate(parts):
+            df = pd.read_parquet(p)
+            groups = list(df.groupby(["valid_time", "fxx"], sort=False))
+            total_groups += len(groups)
+            tasks, idxs = [], []
+            for (vt, fxx), grp in groups:
+                vt_dt = pd.Timestamp(vt).to_pydatetime()
+                if vt_dt.tzinfo is None:
+                    vt_dt = vt_dt.replace(tzinfo=timezone.utc)
+                idxs.append(grp.index.to_numpy())
+                tasks.append((vt_dt, int(fxx), grp["iy"].to_numpy(), grp["ix"].to_numpy(),
+                              max_members, temporal))
+            results = (list(pool.map(_augment_worker, tasks)) if pool
+                       else [_augment_worker(t) for t in tasks])
+            done_groups += len(results)
+
+            col_names = next((n for n, _ in results if n is not None), None)
+            if col_names is not None:
+                # one (rows × features) block for the whole part, filled per group
+                block = np.full((len(df), len(col_names)), np.nan, dtype=np.float32)
+                for idx, (names, arr) in zip(idxs, results):
+                    if names is not None:
+                        block[idx, :] = arr
+                new_df = pd.DataFrame(block, columns=col_names, index=df.index)
+                # drop any pre-existing same names so re-running augment overwrites
+                # cleanly, then attach all new columns in ONE concat (no fragmentation).
+                df = df.drop(columns=[c for c in col_names if c in df.columns])
+                df = pd.concat([df, new_df], axis=1)
+            df.to_parquet(p, index=False)
+            n_added = len(col_names) if col_names is not None else 0
+            print(f"  [{pi + 1}/{len(parts)}] {p.name}: +{n_added} cols, "
+                  f"{done_groups}/{total_groups} samples | {_fmt_eta(time.time() - t0)} elapsed",
+                  flush=True)
+    finally:
+        if pool is not None:
+            pool.shutdown()
+    print(f"augmented {len(parts)} part-file(s) in {_fmt_eta(time.time() - t0)} -> {target}",
+          flush=True)
+    return str(target)
+
+
 def feature_columns(df: pd.DataFrame) -> list[str]:
     """Feature column names = everything that isn't meta or a label."""
     drop = set(META_COLS) | set(LABEL_COLS)

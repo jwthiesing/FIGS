@@ -203,14 +203,21 @@ def _with_retry(fn, *, what="fetch", tries: int = 5, base: float = 1.5):
             time.sleep(wait)
 
 
-def _herbie(run: datetime, fxx: int, product: str):
+def _herbie(run: datetime, fxx: int, product: str, *, cached_only: bool = False):
     """Construct a Herbie object for a run/fxx/product (lazy import).
 
     Herbie probes the S3/Google sources over HTTP at construction time, so this is
     a network call — wrap it in the transient-error retry too (a stalled probe
-    raising ``Read timed out`` would otherwise escape the read paths' retries)."""
+    raising ``Read timed out`` would otherwise escape the read paths' retries).
+
+    ``cached_only`` passes ``priority=[]`` so the constructor does NO remote source
+    probe: ``find_grib`` then skips straight past the (empty) source list and
+    ``download`` serves the already-cached subset directly. Use it only when the
+    needed GRIB subsets are KNOWN to be in the local cache (e.g. augmenting an
+    existing dataset) — a missing subset can't be fetched in this mode."""
     from herbie import Herbie
 
+    extra = {"priority": []} if cached_only else {}
     return _with_retry(lambda: Herbie(
         run.strftime("%Y-%m-%d %H:%M"),
         model="hrrr",
@@ -218,6 +225,7 @@ def _herbie(run: datetime, fxx: int, product: str):
         fxx=fxx,
         save_dir=str(HRRR_CACHE),
         verbose=False,     # suppress the "✅ Found ┊ …" banner per fetch
+        **extra,
     ), what="herbie-init")
 
 
@@ -254,7 +262,7 @@ def _single_field(H, search) -> np.ndarray:
     raise KeyError(f"no variable matched search {search!r}")
 
 
-def isobaric_cube(run: datetime, fxx: int, regrid=None) -> dict[str, np.ndarray]:
+def isobaric_cube(run: datetime, fxx: int, regrid=None, *, cached_only: bool = False) -> dict[str, np.ndarray]:
     """Return 3-D isobaric fields as (nlev, ny, nx) arrays, surface-first.
 
     Keys: 'tmp', 'dpt', 'ugrd', 'vgrd', 'hgt', 'vvel' plus 'levels' (the pressure
@@ -265,7 +273,7 @@ def isobaric_cube(run: datetime, fxx: int, regrid=None) -> dict[str, np.ndarray]
     variable is read, and the native array is freed immediately — so the full
     native cube (~1 GB/member) is never held in memory at once. Output is float32.
     """
-    H = _herbie(run, fxx, "prs")
+    H = _herbie(run, fxx, "prs", cached_only=cached_only)
     # Concurrent S3 byte-range fetches can truncate the read, leaving some
     # variables with fewer pressure levels than others (an inconsistent cube that
     # crashes the profile interpolation downstream). Verify every variable has the
@@ -382,14 +390,14 @@ def _map_surface(dss) -> dict[str, np.ndarray]:
 _SFC_REQUIRED = ("t2m", "td2m", "u10", "v10", "psfc", "zsfc")
 
 
-def surface_fields_combined(run: datetime, fxx: int) -> dict[str, np.ndarray]:
+def surface_fields_combined(run: datetime, fxx: int, *, cached_only: bool = False) -> dict[str, np.ndarray]:
     """Like ``surface_fields`` but fetches all surface fields in ONE download +
     one cfgrib open (≈3x faster, far fewer requests), then maps + adds soil.
 
     Verifies the essential fields are present and re-fetches fresh (overwrite) if a
     concurrent byte-range read truncated the file — the surface analog of the
     ``isobaric_cube`` self-heal (else a missing 't2m' crashes profile building)."""
-    H = _herbie(run, fxx, "sfc")
+    H = _herbie(run, fxx, "sfc", cached_only=cached_only)
     combined = "|".join(SFC_SEARCHES.values())
     out, missing = {}, None
     for attempt in range(3):
@@ -418,7 +426,7 @@ def surface_fields_combined(run: datetime, fxx: int) -> dict[str, np.ndarray]:
         raise RuntimeError(f"surface_fields_combined {run:%Y-%m-%d %H}Z f{fxx:02d}: missing "
                            f"{missing} after 3 fetches; reduce predict --workers")
     # soil lives in the pressure product
-    Hp = _herbie(run, fxx, "prs")
+    Hp = _herbie(run, fxx, "prs", cached_only=cached_only)
     for key, search in SOIL_SEARCHES.items():
         try:
             out[key] = _single_field(Hp, search)

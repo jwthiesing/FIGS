@@ -90,19 +90,21 @@ SPC probability-to-category tables that adds a low **TSTM** row and a **CIG3**
 
 ## Input parameters (per forecast hour)
 
-≈5,100 features. Most are **spatially smoothed**: the key fields are averaged at
+≈6,100 features. Most are **spatially smoothed**: the key fields are averaged at
 25/50/100 mi and given forward/leftward/straddling gradients, in two tiers, so the
 model sees neighborhood context (not just noisy point values). `--temporal` adds
 previous/following-hour copies (~3×).
 
 **Tier 1 — non-motion scalars** (means + gradients vs **all 5** storm motions;
-48 cols each, ~50 fields → ~2,400):
+48 cols each, ~70 fields → ~3,400):
 
 | Group | # fields | Description |
 |---|---:|---|
 | Thermo | 14 | SBCAPE/CIN + 0–90/0–180 mb partials, MLCAPE/CIN (100 mb parcel) + 0–90/0–180 partials, DCAPE, PWAT |
 | Kinematics | 13 | div / conv / abs-vort @ 925/850/500/250 mb + differential divergence (250−850) |
 | TMP/DPT at levels | 8 | T and Td interpolated to 925/850/500/250 mb |
+| Lapse rates | 5 | −dT/dz (K/km) over 0–500 m, 500–1000 m, 1–3 km, 3–6 km (SR-wind layers) + 6–9 km |
+| Surface boundaries | 15 | gradients flagging boundaries (outflow/front/dryline) for deviant supercells: signed ∂/∂x,∂/∂y + magnitude of 2 m T & 2 m Td; the four 10 m wind-vector gradient components (∂u/∂x,∂u/∂y,∂v/∂x,∂v/∂y); 10 m convergence, vorticity, stretching/shearing/total deformation |
 | Ensemble probability | 15 | REFC ≥{10,20,30,40,50}, REFD ≥{30,40,50}, UH 0–3 km ≥{25,75,150}, UH 2–5 km ≥{25,75,150,300} — fraction of members exceeding |
 
 **Tier 2 — motion-relative scalars** (means + gradients in their **own** frame
@@ -137,6 +139,12 @@ python -m figs.cli build-data \
   --members 6 --bands 6,12,18,24,30,36,42,48 \
   --min-reports 10 --workers 8 --flush-every 10 --min-free-gb 660
 
+# 1b. (optional) Add NEW feature families to an EXISTING matrix without rebuilding.
+#     Reuses the local GRIB cache (cache-only, no re-download, no remote file checks)
+#     and recomputes ONLY the new columns from the main member — existing columns are
+#     left untouched. Re-run training afterward to pick them up.
+python -m figs.cli augment-data --parquet Data/processed/figs_2020_2023.parquet --workers 8
+
 # 2. Train lead-banded hazard + conditional-intensity models + calibrators
 #    (LightGBM backend; bagging + regularization; calibrator on the held-out split).
 python -m figs.cli train --parquet Data/processed/figs_2020_2023.parquet \
@@ -166,6 +174,19 @@ python -m figs.cli predict --run 2024-05-21T12 --fmax 36 --workers 4
 | `--flush-every N` | 25 | write a parquet part-file every N samples |
 | `--min-free-gb N` | 50 | hard-stop (+checkpoint) when free disk drops below |
 | `--temporal` | off | add previous/following-hour fields (~3× size) |
+
+### augment-data flags
+
+Adds the lapse-rate + surface-boundary feature columns (Tier-1; ~980 columns with
+their spatial expansion) to an existing parquet **in place**, recomputing only those
+from the cached GRIB. Idempotent (re-running overwrites the same columns).
+
+| flag | default | effect |
+|---|---|---|
+| `--parquet PATH` | — | existing dataset (parquet file or `_parts` dir) |
+| `--members N` | 6 | ensemble members used to pick the main member (matches build) |
+| `--workers N` | 1 | (valid_time, fxx) samples computed concurrently (separate processes) |
+| `--temporal` | off | also add `_prev`/`_next` variants — **must match how the parquet was built** |
 | `FIGS_MEMBER_WORKERS` | 6 | concurrent member downloads within a sample |
 | `FIGS_MAX_TASKS_PER_CHILD` | 16 | recycle a worker after N samples (caps eccodes memory) |
 
