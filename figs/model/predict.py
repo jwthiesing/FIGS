@@ -272,8 +272,8 @@ def predict_or_load(run, fxx_list, models_dir=None, *, max_members=6, temporal=F
     the cache and the persistent output. Returns ``{fxx: {...}}``."""
     from ..products import netcdf
 
-    path = netcdf.predictions_path(run, out_path)
     fxxs = [int(f) for f in fxx_list]
+    path = netcdf.predictions_path(run, out_path, fxx=fxxs)
     if cache and Path(path).exists():
         try:
             cached = netcdf.read_predictions(path)

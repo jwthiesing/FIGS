@@ -79,21 +79,47 @@ def _day_cache_path(day_utc: datetime) -> Path:
     return REPORTS_CACHE / f"reports_{day_utc:%Y%m%d}.csv"
 
 
+# A day's reports keep arriving while it's in progress and finalize over the
+# following hours; don't trust a cached CSV until this long AFTER the UTC day ends
+# (so Day-1 / "today" validation always re-fetches the latest LSRs).
+REPORTS_REFRESH_GRACE = timedelta(hours=12)
+
+
 def reports_for_day(day_utc: datetime, *, refresh: bool = False) -> pd.DataFrame:
-    """Normalized FIGS reports for a single UTC calendar day (cached as CSV)."""
+    """Normalized FIGS reports for a single UTC calendar day (cached as CSV).
+
+    The CSV cache is only trusted once the day is well over (see
+    ``REPORTS_REFRESH_GRACE``); for the current/just-ended day the reports are still
+    being logged, so it always re-fetches fresh and rewrites the cache. ``refresh``
+    forces a re-fetch regardless."""
     if day_utc.tzinfo is None:
         day_utc = day_utc.replace(tzinfo=timezone.utc)
     day0 = day_utc.replace(hour=0, minute=0, second=0, microsecond=0)
     path = _day_cache_path(day0)
-    if path.exists() and not refresh:
+    still_updating = datetime.now(timezone.utc) < day0 + timedelta(days=1) + REPORTS_REFRESH_GRACE
+    if path.exists() and not refresh and not still_updating:
         df = pd.read_csv(path, parse_dates=["time"])
         if not df.empty:
             df["time"] = pd.to_datetime(df["time"], utc=True)
         return df
     rep = _reference_reports_module()
+    if still_updating or refresh:
+        # The reference fetcher has its OWN per-day cache of raw IEM LSRs and only
+        # re-downloads when that file is missing — so an in-progress day's stale/empty
+        # copy would defeat the refresh above. Drop it (and the boundary day the
+        # window also touches) to force a fresh pull of the latest reports.
+        cache_path = getattr(rep, "_iem_lsr_cache_path", None)
+        if cache_path is not None:
+            for dd in (day0, day0 + timedelta(days=1)):
+                try:
+                    p = cache_path(dd)
+                    if p.exists():
+                        p.unlink()
+                except Exception:  # noqa: BLE001 - best-effort cache invalidation
+                    pass
     raw = rep.fetch_reports(day0, day0 + timedelta(days=1))
     df = _normalize(raw)
-    df.to_csv(path, index=False)
+    df.to_csv(path, index=False)            # always rewrite: keeps the freshest copy on disk
     return df
 
 

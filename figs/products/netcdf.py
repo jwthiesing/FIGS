@@ -17,9 +17,17 @@ from ..data import grid
 from . import cig
 
 
-def predictions_path(run, out_path: str | Path | None = None) -> Path:
-    """Canonical netCDF path for a run's predictions (the cache/output location)."""
-    return Path(out_path) if out_path else (PRODUCTS / f"figs_{run:%Y%m%d_%HZ}.nc")
+def predictions_path(run, out_path: str | Path | None = None, fxx=None) -> Path:
+    """Canonical netCDF path for a run's predictions (the cache/output location).
+
+    The forecast-hour span is encoded in the name (e.g. ``figs_20260620_12Z_f07-18.nc``)
+    so two different inference periods for the SAME run don't overwrite each other."""
+    if out_path:
+        return Path(out_path)
+    if fxx:
+        fxxs = [int(f) for f in fxx]
+        return PRODUCTS / f"figs_{run:%Y%m%d_%HZ}_f{min(fxxs):02d}-{max(fxxs):02d}.nc"
+    return PRODUCTS / f"figs_{run:%Y%m%d_%HZ}.nc"
 
 
 def read_predictions(path: str | Path) -> dict:
@@ -78,7 +86,7 @@ def write_predictions(predictions: dict, run, out_path: str | Path | None = None
     ds.attrs["run"] = run.isoformat()
     ds.attrs["grid_dx_km"] = float(grid.FIGS_DX_KM) if hasattr(grid, "FIGS_DX_KM") else 15.0
 
-    out_path = str(out_path) if out_path else str(PRODUCTS / f"figs_{run:%Y%m%d_%HZ}.nc")
+    out_path = str(out_path) if out_path else str(predictions_path(run, fxx=fxxs))
     encoding = {v: {"zlib": True, "complevel": 4} for v in ds.data_vars}
     ds.to_netcdf(out_path, encoding=encoding)
     return out_path
