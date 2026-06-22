@@ -1,4 +1,4 @@
-# FIGS — Forecasting Intensity Guidance for Severe weather
+# FIGS — Forecasting Intensity Guidance System
 
 A gradient-boosted-tree severe-weather model in the style of
 [nadocast](https://github.com/brianhempel/nadocast), in Python, trained on
