@@ -5,8 +5,12 @@ retrieval, feature engine, GBDT wrapper, calibration and plotting**, but retarge
 to wildfires. Per forecast hour and ~15 km cell (25 mi SPC-style neighborhood):
 
 - **p(wildfire)** — a new fire start nearby;
-- **conditional size** distribution (0–25 / 25–100 / 100–250 / 250–1000 / 1000+ ac) → CIG;
-- **p(deadly | nearby)** — "deadliness" (fatal / destructive fire).
+- **conditional size** distribution (0–25 / 25–100 / 100–250 / 250–1000 / 1000+ ac) → CIG.
+
+> **Deadliness is not modeled.** The only casualty source covering the 2021+
+> HRRRv4 era (NCEI Storm Events) geocodes wildfires only to large NWS *forecast
+> zones*, too coarse to attribute deaths/damage to a specific fire. Size is the
+> intensity target.
 
 Products mirror the **SPC fire-weather outlook**: probability + CIG → **NONE /
 ELEVATED / CRITICAL / EXTREME**.
@@ -47,7 +51,7 @@ than FIGS.
 - **Fire reports** — a merged **fire catalog**, where each fire is an *interval*
   (large fires burn across many HRRR cycles), not a point:
   - **NIFC incident locations** → IRWIN id, discovery + containment time, point,
-    fatalities, structures;
+    preliminary size;
   - **NIFC perimeters / NIFS** → authoritative **final acres** (joined by IRWIN id,
     overrides the preliminary incident size);
   - **NIFC fire progression** → time-stamped perimeters → the fire's **footprint
@@ -58,8 +62,9 @@ than FIGS.
     unknown → excluded from the CIG/size fit).
 
   Labels (`data/labels.build_labels`) stamp the 25 mi neighborhood around the active
-  footprint; size = bin of the fire's **final** size; deadliness = fatal/destructive
-  flag. Only the NIFC service URLs/field names still need confirming (below).
+  footprint and store RAW values — occurrence + the largest nearby fire's **final**
+  size (acres), binned at train/CIG time. Only the NIFC service URLs/field names
+  still need confirming (below).
 
 ## Probability + CIG → fire-weather categorical
 
@@ -116,6 +121,4 @@ geography, the wildfire labels/targets, and the fire-weather color/category tabl
 4. **Probability levels** — calibrate `PROB_LEVELS_PCT` from inference / PPF.
 5. **CIG reference size distributions** — fit from training (`fit_cig_reference`);
    the 5 size bins may change once the data is in hand.
-6. **Deadliness label** — currently fatalities>0 OR structures≥`DEADLY_STRUCTURES_THRESHOLD`;
-   confirm definition / threshold.
 ```

@@ -103,19 +103,28 @@ SURFACE_POINT_FIELDS = (
 # Targets and conditional size bins
 # --------------------------------------------------------------------------- #
 HAZARDS = ("wildfire",)                 # single "hazard" → reuses the FIGS model loop
-NEIGHBORHOOD_RADIUS_MI = 25.0           # SPC-style neighborhood (probability + deadliness)
+NEIGHBORHOOD_RADIUS_MI = 25.0           # SPC-style neighborhood (probability + size)
 NEIGHBORHOOD_TIME_MIN = F.NEIGHBORHOOD_TIME_MIN
 
-# A fire counts as "deadly"/significant if it caused a fatality or destroyed
-# structures within the neighborhood (drives the deadliness model). TBD as the
-# combined report schema firms up; structures-destroyed threshold is a placeholder.
-DEADLY_STRUCTURES_THRESHOLD = 1
+# Labels store RAW values (acres), NOT bins — so the size bins can change with a
+# retrain (no dataset rebuild):
+#   wildfire        1 if a fire is active in the 25 mi neighborhood
+#   wildfire_size   final size (acres) of the largest nearby fire (NaN if unknown)
+# NB: deadliness is intentionally NOT modeled — the only casualty source covering the
+# 2021+ HRRRv4 era (NCEI Storm Events) geocodes wildfires only to large NWS forecast
+# zones, too coarse to attribute deaths/damage to a specific fire.
+LABEL_FIELDS = ("wildfire", "wildfire_size")
 
-# Conditional SIZE distribution (the CIG target): final-size acreage bins.
+# Prescribed burns ("... RX ...") are NOT wildfires — drop incidents whose name
+# carries this token.
+RX_NAME_TOKENS = (" RX", "RX ", "PRESCRIBED", "BROADCAST BURN", "PILE BURN")
+
+# Conditional SIZE distribution (the CIG target): final-size acreage bins. Applied at
+# TRAIN/CIG time to the raw wildfire_size column (so these can change freely).
 INTENSITY_BINS = {
     "wildfire": dict(
-        labels=("0-25", "25-100", "100-250", "250-1000", "1000+"),
-        edges=(0.0, 25.0, 100.0, 250.0, 1000.0),   # acres; >= edge → that/next bin
+        labels=("0-50", "50-100", "100-500", "500-1000", "1000-2500", "2500-5000", "5000+"),
+        edges=(0.0, 50.0, 100.0, 500.0, 1000.0, 2500.0, 5000.0),
         kind="acres",
     ),
 }
@@ -131,10 +140,11 @@ INTENSITY_BINS = {
 CIG_CATEGORIES = ("<CIG1", "CIG1", "CIG2", "CIG3")
 CIG_REFERENCE = {
     "wildfire": {
-        "<CIG1": (70.0, 20.0, 6.0, 3.0, 1.0),     # mostly small fires
-        "CIG1":  (45.0, 30.0, 15.0, 7.0, 3.0),
-        "CIG2":  (25.0, 28.0, 24.0, 15.0, 8.0),
-        "CIG3":  (10.0, 18.0, 24.0, 26.0, 22.0),  # heavy large-fire tail
+        #              0-50   50-100  100-500  500-1k   1k-2.5k  2.5k-5k  5k+
+        "<CIG1": (60.0, 18.0,  12.0,   5.0,    3.0,     1.5,     0.5),  # mostly small
+        "CIG1":  (38.0, 22.0,  20.0,   10.0,   6.0,     3.0,     1.0),
+        "CIG2":  (18.0, 17.0,  25.0,   18.0,   12.0,    7.0,     3.0),
+        "CIG3":  ( 6.0,  9.0,  17.0,   20.0,   20.0,   16.0,    12.0),  # heavy large-fire tail
     },
 }
 
@@ -156,7 +166,7 @@ CIG_REFERENCE = {
 CATEGORY_NAMES = {0: "NONE", 1: "ELEVATED", 2: "CRITICAL", 3: "EXTREME"}
 
 # placeholder probability thresholds (%) for levels 1..5 — RECALIBRATE from PPF.
-PROB_LEVELS_PCT = (2.0, 5.0, 10.0, 20.0, 35.0)
+PROB_LEVELS_PCT = (2.0, 5.0, 10.0, 20.0, 35.0, 50.0, 75.0)
 
 CIG_CONVERSION = {
     "wildfire": [
@@ -165,6 +175,8 @@ CIG_CONVERSION = {
         (PROB_LEVELS_PCT[2], (1, 2, 2, 3)),   # L3
         (PROB_LEVELS_PCT[3], (2, 2, 3, 3)),   # L4
         (PROB_LEVELS_PCT[4], (2, 3, 3, 3)),   # L5
+        (PROB_LEVELS_PCT[5], (3, 3, 3, 3)),   # L6  50%: EXTREME regardless of CIG
+        (PROB_LEVELS_PCT[6], (3, 3, 3, 3)),   # L7  75%: EXTREME regardless of CIG
     ],
 }
 

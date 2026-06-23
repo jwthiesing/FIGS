@@ -1,11 +1,11 @@
 """Train the FIGS-W models, lead-banded, reusing the FIGS GBDT wrapper + calibrator.
 
-Per band, three models:
+Per band, two models:
   * ``hazard_wildfire_{band}.pkl``  — p(wildfire) occurrence (binary, weighted);
-  * ``hazard_deadly_{band}.pkl``    — p(deadly|nearby) "deadliness" (binary);
   * ``intensity_wildfire_{band}.pkl`` — conditional SIZE distribution (multiclass,
     positive cells only) → CIG.
 Plus ``calib_*_{band}.pkl`` (validation-fit) and ``feature_cols.json``.
+(Deadliness is intentionally not modeled — see config.LABEL_FIELDS.)
 """
 
 from __future__ import annotations
@@ -61,22 +61,29 @@ def train_all(parquet_path: str, out_dir=None, *, band: bool = True,
         wva = ava["weight"].to_numpy(np.float32) if len(Xva) else None
         m: dict = {"n_train": int(len(Xtr)), "n_val": int(len(Xva))}
 
-        # occurrence + deadliness (binary)
-        for name, col in (("wildfire", "wildfire"), ("deadly", "wildfire_sig")):
+        # binary occurrence target (p(wildfire) in the 25 mi neighborhood):
+        targets = {"wildfire": (atr["wildfire"].to_numpy(int),
+                                ava["wildfire"].to_numpy(int) if len(Xva) else None)}
+        for name, (ytr_b, yva_b) in targets.items():
+            if ytr_b.max() == ytr_b.min():          # no positives in this band → skip
+                continue
             mdl = GBDTModel(task="binary", backend=backend, **hpc)
-            mdl.fit(Xtr, atr[col].to_numpy(int), sample_weight=wtr)
+            mdl.fit(Xtr, ytr_b, sample_weight=wtr)
             mdl.save(out_dir / f"hazard_{name}_{tag}.pkl")
-            if len(Xva):
+            if yva_b is not None and yva_b.max() > yva_b.min():
                 p = mdl.predict_pos(Xva)
-                Calibrator(method=calibrator).fit(p, ava[col].to_numpy(int),
-                                                  sample_weight=wva).save(out_dir / f"calib_{name}_{tag}.pkl")
+                Calibrator(method=calibrator).fit(p, yva_b, sample_weight=wva).save(
+                    out_dir / f"calib_{name}_{tag}.pkl")
 
-        # conditional size (multiclass, positive cells with known bin)
-        ytr = atr["wildfire_bin"].to_numpy(int)
-        idx = ytr >= 0
+        # conditional SIZE (multiclass): bin the RAW wildfire_size (acres) at train
+        # time via config edges → bins can change with a retrain, no rebuild.
+        edges = np.asarray(C.INTENSITY_BINS["wildfire"]["edges"], float)
+        sz = atr["wildfire_size"].to_numpy(float)
+        idx = np.isfinite(sz) & (sz > 0)
         if idx.sum() >= 100:
+            ybin = (np.searchsorted(edges, sz[idx], side="right") - 1).clip(0, len(edges) - 1)
             sm = GBDTModel(task="multiclass", backend=backend, **hpc)
-            sm.fit(Xtr[idx], ytr[idx], sample_weight=wtr[idx])
+            sm.fit(Xtr[idx], ybin.astype(int), sample_weight=wtr[idx])
             sm.save(out_dir / f"intensity_wildfire_{tag}.pkl")
             m["n_size_pos"] = int(idx.sum())
         m["seconds"] = round(time.time() - t0, 1)

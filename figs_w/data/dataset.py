@@ -13,7 +13,7 @@ import pandas as pd
 # reuse FIGS's generic part-file + streaming-read machinery
 from figs.data.dataset import (  # noqa: F401
     _dataset_target, _disk_free_gb, _fmt_eta, _parts_dir, _progress, _write_part,
-    feature_columns, read_band, read_split,
+    feature_columns, read_band, read_dataset, read_split,
 )
 from figs.data import grid
 
@@ -24,7 +24,7 @@ from . import state as state_mod
 from . import static as static_mod
 
 META_COLS = ["valid_time", "fxx", "iy", "ix", "lat", "lon", "split", "weight"]
-LABEL_COLS = ["wildfire", "wildfire_sig", "wildfire_bin"]
+LABEL_COLS = list(C.LABEL_FIELDS)   # wildfire (occurrence), wildfire_size (raw acres)
 
 
 def _features_for_valid(run: datetime, fxx: int, *, cached_only: bool = False) -> dict:
@@ -154,6 +154,71 @@ def build_dataset_for_runs(run_fxx_pairs, out_path=None, *, neg_keep: float = 0.
     flush()
     print(f"wrote {rows} rows across {part_idx} part-files -> {parts_dir}", flush=True)
     return out_path
+
+
+def _relabel_part(path: str) -> tuple[int, dict]:
+    """Recompute ONLY the label columns for one part-file from the (corrected) fire
+    catalog and rewrite it in place. No HRRR / feature recompute — labels depend only
+    on valid_time + the stored (iy, ix). Returns (rows, positive counts)."""
+    df = pd.read_parquet(path)
+    cols = {c: np.zeros(len(df), dtype=(np.int8 if c == "wildfire" else np.float32))
+            for c in LABEL_COLS}
+    if "wildfire_size" in cols:
+        cols["wildfire_size"][:] = np.nan
+    for vt, grp in df.groupby("valid_time", sort=False):
+        vt_dt = pd.Timestamp(vt).to_pydatetime()
+        if vt_dt.tzinfo is None:
+            vt_dt = vt_dt.replace(tzinfo=timezone.utc)
+        labs = labels_w.build_labels(vt_dt)
+        iy = grp["iy"].to_numpy(); ix = grp["ix"].to_numpy(); idx = grp.index.to_numpy()
+        for c in LABEL_COLS:
+            cols[c][idx] = labs[c][iy, ix]
+    for c in LABEL_COLS:
+        df[c] = cols[c]
+    df.to_parquet(path, index=False)
+    pos = {"wildfire": int((df["wildfire"] == 1).sum()),
+           "size>0": int((df["wildfire_size"] > 0).sum())}
+    return len(df), pos
+
+
+def augment_labels(path: str, *, workers: int = 1) -> str:
+    """Recompute the label columns of an EXISTING dataset IN PLACE from the corrected
+    fire catalog — NO preprocessing/HRRR rebuild (features untouched). Use this after
+    a catalog/label-logic fix (e.g. the NIFC field + RX corrections).
+    Primes the catalog first so parallel workers reuse the on-disk cache."""
+    import os
+    import time
+    from concurrent.futures import ProcessPoolExecutor
+    from pathlib import Path
+
+    target = _dataset_target(path)
+    parts = sorted(Path(target).glob("*.parquet")) if Path(target).is_dir() else [Path(target)]
+    if not parts:
+        raise FileNotFoundError(f"no parquet part-files under {target}")
+    # prime the catalog over the dataset's valid-time span (main process; workers reuse disk cache)
+    vt = read_dataset(path, columns=["valid_time"])["valid_time"]
+    from . import fire_reports
+    fire_reports.prime_catalog(pd.Timestamp(vt.min()).to_pydatetime(),
+                               pd.Timestamp(vt.max()).to_pydatetime())
+    workers = max(1, int(workers)); t0 = time.time()
+    print(f"relabeling {len(parts)} part-file(s) ({workers} worker(s))", flush=True)
+    tot = {"wildfire": 0, "size>0": 0}; nrows = 0
+
+    def _accum(res):
+        nonlocal nrows
+        n, pos = res; nrows += n
+        for k in tot: tot[k] += pos[k]
+
+    paths = [str(p) for p in parts]
+    if workers > 1:
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            for i, res in enumerate(ex.map(_relabel_part, paths), 1):
+                _accum(res); print(f"  [{i}/{len(parts)}] {_fmt_eta(time.time()-t0)}", flush=True)
+    else:
+        for i, p in enumerate(paths, 1):
+            _accum(_relabel_part(p)); print(f"  [{i}/{len(parts)}] {_fmt_eta(time.time()-t0)}", flush=True)
+    print(f"relabeled {nrows} rows | positives: {tot} -> {target}", flush=True)
+    return str(target)
 
 
 def fire_valid_hours(start: datetime, end: datetime, min_fires: int = 1) -> list[datetime]:

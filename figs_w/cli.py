@@ -1,7 +1,7 @@
 """FIGS-W command-line entry points.
 
   build-data  Build the wildfire training matrix from fire-report hours.
-  train       Train the wildfire occurrence / deadliness / size models.
+  train       Train the wildfire occurrence + conditional-size models.
   predict     Run a HRRR cycle → fire-weather probability + CIG categorical + size.
 
 Examples:
@@ -52,6 +52,12 @@ def cmd_build_data(args):
     build_dataset_for_runs(pairs, args.out, neg_keep=args.neg_keep,
                            flush_every=args.flush_every, min_free_gb=args.min_free_gb,
                            workers=args.workers)
+
+
+def cmd_augment_labels(args):
+    from .data.dataset import augment_labels
+
+    augment_labels(args.parquet, workers=args.workers)
 
 
 def cmd_train(args):
@@ -113,6 +119,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "feature build); 1 = serial. Catalog is disk-cached so workers "
                         "don't re-query NIFC")
     b.set_defaults(func=cmd_build_data)
+
+    al = sub.add_parser("augment-labels", help="recompute the label columns (occurrence / "
+                        "size) in an existing parquet from the corrected fire catalog "
+                        "— no HRRR/feature rebuild")
+    al.add_argument("--parquet", required=True)
+    al.add_argument("--workers", type=int, default=1)
+    al.set_defaults(func=cmd_augment_labels)
 
     t = sub.add_parser("train", help="train wildfire models")
     t.add_argument("--parquet", required=True); t.add_argument("--models", default=None)

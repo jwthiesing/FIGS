@@ -19,15 +19,16 @@ from .. import config as C
 
 set_extent = P.set_extent
 
-# Probability fill ramp for the 5 fire-weather probability levels (tan → red → magenta).
-PROB_COLORS = {"wildfire": ["#ffe7b3", "#ffcc99", "#ff9966", "#ff5a5a", "#ff00ff"]}
+# Probability fill ramp: tan → orange → red → magenta → purple → deep purple (7 levels).
+PROB_COLORS = {"wildfire": ["#ffe7b3", "#ffcc99", "#ff9966", "#ff5a5a", "#ff00ff",
+                             "#9900cc", "#4b0082"]}
 
 # Categorical fire-weather colors: 1 ELEVATED (tan), 2 CRITICAL (red), 3 EXTREME (magenta).
 # 0 NONE and below-threshold (-1) are not drawn (SPC fire outlooks fill only 1–3).
 CAT_COLORS = {1: "#f6c87a", 2: "#ff5a5a", 3: "#ff33ff"}
 
-# size-bin (intensity) palette, small → very large fire.
-SIZE_COLORS = ["#ffffb2", "#fecc5c", "#fd8d3c", "#f03b20", "#bd0026"]
+# size-bin (intensity) palette for 7 bins (pale yellow → dark red), small → very large fire.
+SIZE_COLORS = ["#ffffb2", "#fee391", "#fecc5c", "#fd8d3c", "#f03b20", "#bd0026", "#67000d"]
 
 
 def plot_probability(prob, title, out_path=None, cig=None):

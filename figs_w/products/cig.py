@@ -97,17 +97,19 @@ def fit_cig_reference(marginal, tilts=(-1.0, 0.0, 1.0, 2.0)) -> dict:
 
 def marginal_size_distribution(parquet_path: str, hazard: str = "wildfire") -> np.ndarray:
     """Empirical conditional size distribution: frequency of each size bin among
-    cells with a wildfire (``{hazard}_bin >= 0``), read off a built parquet."""
+    wildfire cells, binning the RAW ``{hazard}_size`` (acres) with the config edges."""
     import pandas as pd
     from pathlib import Path
 
-    col = f"{hazard}_bin"
+    col = f"{hazard}_size"
+    edges = np.asarray(INTENSITY_BINS[hazard]["edges"], float)
+    nb = len(INTENSITY_BINS[hazard]["labels"])
     parts = (sorted(Path(parquet_path).glob("*.parquet"))
              if Path(parquet_path).is_dir() else [Path(parquet_path)])
-    nb = len(INTENSITY_BINS[hazard]["labels"])
     counts = np.zeros(nb, dtype=float)
     for p in parts:
-        b = pd.read_parquet(p, columns=[col])[col].to_numpy()
-        b = b[b >= 0]
+        sz = pd.read_parquet(p, columns=[col])[col].to_numpy(float)
+        sz = sz[np.isfinite(sz) & (sz > 0)]
+        b = (np.searchsorted(edges, sz, side="right") - 1).clip(0, nb - 1)
         counts += np.bincount(b.astype(int), minlength=nb)[:nb]
     return counts / counts.sum() if counts.sum() else counts

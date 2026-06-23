@@ -3,11 +3,11 @@
 A wildfire is an **interval**, not a point: large fires burn across many HRRR
 cycles, so each fire is represented as an ACTIVE WINDOW ``[start, end]`` with a
 time-ordered set of footprint sample points (from the **fire-progression**
-perimeters), plus an authoritative **final size** / fatalities / structures.
+perimeters), plus an authoritative **final size** (acres).
 
 Sources, merged authoritatively:
   1. **NIFC incident locations** — IRWIN id, discovery + containment time, point,
-     fatalities, structures, (preliminary) size.
+     (preliminary) size.
   2. **NIFC perimeters / NIFS archive** — final acres (joined to the incident by
      IRWIN id; authoritative size, overrides the preliminary incident size).
   3. **NIFC fire progression** — time-stamped perimeters → the fire's footprint
@@ -48,11 +48,18 @@ NIFC_PROGRESSION_SERVICE = (
     "Fire_Progression/FeatureServer/0/query")            # time-stamped perimeters
 IEM_LSR_URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/gis/lsr.py"
 
+# Confirmed against the live WFIGS "Incidents" layer (97 fields). Size is coalesced
+# FinalAcres → IncidentSize → DiscoveryAcres (FinalAcres is sparse; IncidentSize is
+# the most-populated, back to ~2008). lat/lon come from the feature geometry.
+# ``name`` is used to drop prescribed
+# burns ("... RX ...", config.RX_NAME_TOKENS), which are NOT wildfires.
+# NB: outFields must be VALID — an unknown field makes ArcGIS reject the whole query
+# (returns 0 features), which silently degrades the catalog to IEM-only.
 INCIDENT_FIELDS = dict(
-    irwin="IrwinID", time="FireDiscoveryDateTime", contain="ContainmentDateTime",
-    out="FireOutDateTime", size="IncidentSize", fatalities="Fatalities",
-    structures="StructuresDestroyed", lat="InitialLatitude", lon="InitialLongitude")
-PERIMETER_FIELDS = dict(irwin="poly_IRWINID", acres="poly_GISAcres")
+    irwin="IrwinID", name="IncidentName", time="FireDiscoveryDateTime",
+    contain="ContainmentDateTime", out="FireOutDateTime",
+    size="IncidentSize", final="FinalAcres", disc="DiscoveryAcres",
+    lat="InitialLatitude", lon="InitialLongitude")
 PROGRESSION_FIELDS = dict(irwin="IRWINID", time="CreateDate")    # + geometry
 
 # IEM↔NIFC dedup tolerances and the default IEM-only / no-containment durations.
@@ -68,8 +75,7 @@ class FireRecord:
     irwin: str
     start: datetime
     end: datetime
-    final_size: float                       # acres; NaN if unknown (IEM-only)
-    deadly: bool
+    final_size: float                       # acres; NaN if unknown
     # footprint over time: list of (time, points) where points is (M,2) lat/lon.
     footprint: list = field(default_factory=list)
     static_pt: tuple | None = None          # (lat, lon) fallback when no progression
@@ -107,6 +113,12 @@ def _epoch(dtval) -> datetime | None:
         return None
 
 
+def _ts(dt: datetime) -> str:
+    """ArcGIS date literal. This service REJECTS epoch-ms compares (HTTP 400) — date
+    fields must be filtered with ``TIMESTAMP 'YYYY-MM-DD HH:MM:SS'``."""
+    return f"TIMESTAMP '{dt:%Y-%m-%d %H:%M:%S}'"
+
+
 def _sample_polygon(geom: dict) -> np.ndarray:
     """Representative (M,2) lat/lon points for a GeoJSON Polygon/MultiPolygon:
     the centroid + a downsampled set of exterior-ring vertices (so a big fire's
@@ -136,10 +148,29 @@ def _sample_polygon(geom: dict) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # Catalog assembly (cached per month)
 # --------------------------------------------------------------------------- #
+def _is_rx(name: str) -> bool:
+    """True for prescribed-burn / non-wildfire incident names (config.RX_NAME_TOKENS)."""
+    u = (name or "").upper()
+    return any(tok in u for tok in C.RX_NAME_TOKENS)
+
+
+def _coalesce_size(a: dict, f: dict) -> float:
+    """Final size (acres): first positive of FinalAcres → IncidentSize → DiscoveryAcres."""
+    for key in (f["final"], f["size"], f["disc"]):
+        v = a.get(key)
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            return v
+    return float("nan")
+
+
 def _fetch_incidents(start: datetime, end: datetime) -> pd.DataFrame:
     f = INCIDENT_FIELDS
-    s_ms, e_ms = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
-    where = f"{f['time']} <= {e_ms} AND ({f['contain']} >= {s_ms} OR {f['contain']} IS NULL)"
+    where = (f"{f['time']} <= {_ts(end)} AND "
+             f"({f['contain']} >= {_ts(start)} OR {f['contain']} IS NULL)")
     try:
         feats = _arcgis_query(NIFC_INCIDENT_SERVICE, where, ",".join(f.values()))
     except Exception as e:  # noqa: BLE001
@@ -148,53 +179,31 @@ def _fetch_incidents(start: datetime, end: datetime) -> pd.DataFrame:
     rows = []
     for ft in feats:
         a = ft.get("properties", {}) or {}
-        geom = (ft.get("geometry") or {}).get("coordinates") or [None, None]
-        lon, lat = (list(geom) + [None, None])[:2]
+        name = str(a.get(f["name"]) or "")
+        if _is_rx(name):                       # drop prescribed burns — not wildfires
+            continue
+        # coordinates come from the InitialLatitude/InitialLongitude attribute fields
+        # (geometry=False avoids downloading huge geometry blobs for 75k+ incidents)
+        lat, lon = a.get(f["lat"]), a.get(f["lon"])
         rows.append(dict(
-            irwin=a.get(f["irwin"]), start=_epoch(a.get(f["time"])),
+            irwin=a.get(f["irwin"]), name=name, start=_epoch(a.get(f["time"])),
             contain=_epoch(a.get(f["contain"])) or _epoch(a.get(f["out"])),
-            size=float(a.get(f["size"]) or np.nan),
-            fatalities=int(a.get(f["fatalities"]) or 0),
-            structures=int(a.get(f["structures"]) or 0),
-            lat=a.get(f["lat"], lat), lon=a.get(f["lon"], lon)))
+            size=_coalesce_size(a, f), lat=lat, lon=lon))
     df = pd.DataFrame(rows)
     return df[df["irwin"].notna() & df["start"].notna()] if len(df) else df
-
-
-def _fetch_final_acres(irwins: list[str]) -> dict[str, float]:
-    """Authoritative final acres per IRWIN id from the perimeter/NIFS layer."""
-    f = PERIMETER_FIELDS
-    if not irwins:
-        return {}
-    out: dict[str, float] = {}
-    for i in range(0, len(irwins), 500):                 # chunk the IN() clause
-        chunk = irwins[i:i + 500]
-        where = f["irwin"] + " IN (" + ",".join(f"'{x}'" for x in chunk) + ")"
-        try:
-            for ft in _arcgis_query(NIFC_PERIMETER_SERVICE, where, ",".join(f.values())):
-                a = ft.get("properties", {}) or {}
-                irw, ac = a.get(f["irwin"]), a.get(f["acres"])
-                if irw is not None and ac is not None:
-                    out[irw] = max(out.get(irw, 0.0), float(ac))   # largest perimeter = final
-        except Exception as e:  # noqa: BLE001
-            print(f"[warn] NIFC perimeters fetch failed ({str(e)[:90]})", file=sys.stderr)
-            break
-    return out
 
 
 def _fetch_progression(start: datetime, end: datetime) -> dict[str, list]:
     """Time-stamped footprint samples per IRWIN id from the fire-progression layer:
     {irwin: [(time, points(M,2 lat/lon)), ...]} sorted by time."""
     f = PROGRESSION_FIELDS
-    s_ms, e_ms = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
-    where = f"{f['time']} >= {s_ms} AND {f['time']} <= {e_ms}"
+    where = f"{f['time']} >= {_ts(start)} AND {f['time']} <= {_ts(end)}"
     prog: dict[str, list] = {}
     try:
         feats = _arcgis_query(NIFC_PROGRESSION_SERVICE, where, ",".join(f.values()),
                               geometry=True)
-    except Exception as e:  # noqa: BLE001
-        print(f"[warn] NIFC progression fetch failed ({str(e)[:90]})", file=sys.stderr)
-        return prog
+    except Exception:  # noqa: BLE001
+        return prog   # progression is best-effort; fires fall back to static incident point
     for ft in feats:
         a = ft.get("properties", {}) or {}
         irw, t = a.get(f["irwin"]), _epoch(a.get(f["time"]))
@@ -212,21 +221,16 @@ def _build_catalog(start: datetime, end: datetime) -> list[FireRecord]:
     inc = _fetch_incidents(start, end)
     if inc.empty:
         return _iem_only_records(start, end, nifc=[])
-    final_ac = _fetch_final_acres([str(x) for x in inc["irwin"].tolist()])
     prog = _fetch_progression(start - timedelta(days=2), end + timedelta(days=2))
 
     recs: list[FireRecord] = []
     for _, r in inc.iterrows():
         irw = str(r["irwin"])
         endt = r["contain"] or (r["start"] + timedelta(hours=_DEFAULT_DURATION_HR))
-        size = final_ac.get(irw, r["size"])              # perimeter overrides incident size
-        deadly = (int(r["fatalities"]) > 0
-                  or int(r["structures"]) >= C.DEADLY_STRUCTURES_THRESHOLD)
-        fp = prog.get(irw, [])
         static = (float(r["lat"]), float(r["lon"])) if pd.notna(r["lat"]) and pd.notna(r["lon"]) else None
         recs.append(FireRecord(irwin=irw, start=r["start"], end=endt,
-                               final_size=float(size) if pd.notna(size) else np.nan,
-                               deadly=bool(deadly), footprint=fp, static_pt=static))
+                               final_size=float(r["size"]) if pd.notna(r["size"]) else np.nan,
+                               footprint=prog.get(irw, []), static_pt=static))
     recs += _iem_only_records(start, end, nifc=recs)
     return recs
 
@@ -253,8 +257,7 @@ def _iem_only_records(start, end, nifc: list[FireRecord]) -> list[FireRecord]:
         out.append(FireRecord(irwin=f"IEM-{t:%Y%m%d%H%M}-{la:.2f}-{lo:.2f}",
                               start=t - timedelta(hours=_IEM_ACTIVE_HR),
                               end=t + timedelta(hours=_IEM_ACTIVE_HR),
-                              final_size=np.nan, deadly=False, footprint=[],
-                              static_pt=(la, lo)))
+                              final_size=np.nan, footprint=[], static_pt=(la, lo)))
     return out
 
 
@@ -287,7 +290,9 @@ def _haversine_mi(lat1, lon1, lat2, lon2) -> float:
 
 
 def _catalog_pkl(year: int, month: int):
-    return C.REPORTS_CACHE / f"catalog_{year:04d}{month:02d}.pkl"
+    # v5: deadliness/casualty fields removed — FireRecord is now size-only. Old
+    # caches carry the dropped fields, so bump the filename to invalidate them.
+    return C.REPORTS_CACHE / f"catalog_v5_{year:04d}{month:02d}.pkl"
 
 
 @lru_cache(maxsize=36)
@@ -318,9 +323,9 @@ def _month_catalog(year: int, month: int) -> tuple:
 
 
 def active_fires(valid_time: datetime):
-    """Fires active at ``valid_time``, each as ``(points (M,2 lat/lon), final_size,
-    deadly)`` using the footprint as-of that time (latest progression perimeter ≤
-    valid_time, else the static incident point)."""
+    """Fires active at ``valid_time``, each as ``(points (M,2 lat/lon), final_size)``
+    using the footprint as-of that time (latest progression perimeter ≤ valid_time,
+    else the static incident point)."""
     if valid_time.tzinfo is None:
         valid_time = valid_time.replace(tzinfo=timezone.utc)
     # current + previous month catch fires that started before this month
@@ -340,7 +345,7 @@ def active_fires(valid_time: datetime):
             pts = np.array([rec.static_pt])
         if pts is None or len(pts) == 0:
             continue
-        out.append((pts, rec.final_size, rec.deadly))
+        out.append((pts, rec.final_size))
     return out
 
 

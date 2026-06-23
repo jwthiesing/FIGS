@@ -14,8 +14,7 @@ swaps the target (severe hazards → wildfire) and the inputs:
 
 Targets (per forecast hour, per ~15 km cell, within a 25 mi neighborhood):
   * ``p(wildfire)``           — a new wildfire start nearby;
-  * conditional **size** distribution (5 acreage bins) → CIG categories;
-  * ``p(deadly | wildfire)``  — "deadliness" (fatal / destructive fire nearby).
+  * conditional **size** distribution (5 acreage bins) → CIG categories.
 
 Products mirror the SPC **fire-weather** outlook: probability + CIG → NONE /
 ELEVATED / CRITICAL / EXTREME.
