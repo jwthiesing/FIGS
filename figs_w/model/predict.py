@@ -94,27 +94,23 @@ def predict_forecast(run, fxx_list, models_dir=None, *, workers: int = 4) -> dic
     return out
 
 
-def _cache_path(run, fxx_list) -> Path:
-    fxxs = sorted(int(f) for f in fxx_list)
-    return C.PRODUCTS / f"figs_w_{run:%Y%m%d_%HZ}_f{min(fxxs):02d}-{max(fxxs):02d}.npz"
-
-
 def predict_or_load(run, fxx_list, models_dir=None, *,
                     workers: int = 4, cache: bool = True, write: bool = True) -> dict:
-    """Load from .npz cache if available, else run ``predict_forecast`` and save."""
+    """Load from netCDF cache if available, else run ``predict_forecast`` and save.
+
+    Output format mirrors ``figs.products.netcdf`` (same variable names, same grid,
+    same CF conventions) — only the hazard keys and title differ."""
+    from ..products.netcdf import predictions_path, read_predictions, write_predictions
+
     fxx_list = [int(f) for f in fxx_list]
-    path = _cache_path(run, fxx_list)
-    if cache and path.exists():
-        npz = np.load(path, allow_pickle=False)
-        preds = {int(f): {"p_wildfire": npz[f"p_{f}"], "dist_wildfire": npz[f"d_{f}"]}
-                 for f in fxx_list if f"p_{f}" in npz}
-        if len(preds) == len(fxx_list):
-            print(f"[predict-w] loaded from cache: {path}")
+    nc = predictions_path(run, fxx=fxx_list)
+    if cache and Path(nc).exists():
+        preds = read_predictions(nc)
+        if not [f for f in fxx_list if f not in preds]:
+            print(f"[predict-w] loaded from cache: {nc}")
             return preds
     preds = predict_forecast(run, fxx_list, models_dir=models_dir, workers=workers)
     if write:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(path, **{f"p_{f}": preds[f]["p_wildfire"] for f in preds},
-                            **{f"d_{f}": preds[f]["dist_wildfire"] for f in preds})
-        print(f"[predict-w] saved to {path}")
+        write_predictions(preds, run, nc)
+        print(f"[predict-w] saved to {nc}")
     return preds
