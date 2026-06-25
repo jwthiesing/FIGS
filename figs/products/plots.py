@@ -63,12 +63,44 @@ def overlay_cig(ax, lon, lat, cig):
 # plots. Override in one place via ``set_extent(...)`` (e.g. from a notebook).
 MAP_EXTENT = [-120, -74, 23, 50]
 
+# Module-level run context — set automatically by predict_or_load / predict_forecast
+# so every plot function can annotate "init … f##–##" without caller changes.
+_RUN_CONTEXT: dict = {}   # keys: "run" (datetime), "fxx_list" (list[int])
+
 
 def set_extent(extent) -> None:
     """Set the plan-view extent used by every plot here (lon_min, lon_max,
     lat_min, lat_max). Pass ``None`` to let cartopy auto-fit the data."""
     global MAP_EXTENT
     MAP_EXTENT = list(extent) if extent is not None else None
+
+
+def set_run_context(run, fxx_list) -> None:
+    """Record the current HRRR run + fxx list so all subsequent plot calls can
+    annotate figures automatically. Called by predict_or_load / predict_forecast."""
+    _RUN_CONTEXT["run"] = run
+    _RUN_CONTEXT["fxx_list"] = sorted(int(f) for f in fxx_list)
+
+
+def _run_tag(fxx=None) -> str:
+    """Build the run-context tag string, or '' if no context is set."""
+    run = _RUN_CONTEXT.get("run")
+    if run is None:
+        return ""
+    fxx_list = _RUN_CONTEXT.get("fxx_list", [])
+    if fxx is not None:
+        fxx_part = f"f{int(fxx):02d}"
+    elif fxx_list:
+        fxx_part = f"f{min(fxx_list):02d}–{max(fxx_list):02d}"
+    else:
+        fxx_part = ""
+    return f"init {run:%Y-%m-%d %HZ}  {fxx_part}".strip()
+
+
+def _with_run(title: str, fxx=None) -> str:
+    """Append 'init … f##' as a second title line, or return title unchanged."""
+    tag = _run_tag(fxx)
+    return f"{title}\n{tag}" if tag else title
 
 
 def _base_ax(figsize=(10, 6)):
@@ -88,7 +120,8 @@ def _base_ax(figsize=(10, 6)):
 
 
 def plot_probability(prob: np.ndarray, hazard: str, title: str, out_path: str | Path | None = None,
-                     sig: np.ndarray | None = None, cig: np.ndarray | None = None) -> str:
+                     sig: np.ndarray | None = None, cig: np.ndarray | None = None,
+                     fxx: int | None = None) -> str:
     """SPC-style map: filled probability contours (prob in 0..1) + CIG intensity
     hatching. ``cig`` is an (ny, nx) int array (0 none .. 3 CIG3) -> dotted /
     diagonal / crosshatch. ``sig`` (legacy) hatches a significant field at 10%."""
@@ -113,7 +146,7 @@ def plot_probability(prob: np.ndarray, hazard: str, title: str, out_path: str | 
     cbar = fig.colorbar(cf, ax=ax, orientation="horizontal", pad=0.03, shrink=0.8,
                         ticks=prob_levels)
     cbar.ax.set_xticklabels([f"{int(p*100)}%" for p in prob_levels])
-    ax.set_title(title)
+    ax.set_title(_with_run(title, fxx))
     out_path = out_path or (PRODUCTS / f"prob_{hazard}.png")
     fig.savefig(out_path, dpi=110, bbox_inches="tight")
     plt.close(fig)
@@ -121,7 +154,7 @@ def plot_probability(prob: np.ndarray, hazard: str, title: str, out_path: str | 
 
 
 def plot_categorical(category: np.ndarray, hazard: str, title: str,
-                     out_path: str | Path | None = None) -> str:
+                     out_path: str | Path | None = None, fxx: int | None = None) -> str:
     """Filled SPC categorical risk (integer levels 0..5; 0=TSTM drawn, <0 = no
     risk, not drawn)."""
     import cartopy.crs as ccrs
@@ -138,7 +171,7 @@ def plot_categorical(category: np.ndarray, hazard: str, title: str,
     cbar = fig.colorbar(pm, ax=ax, orientation="horizontal", pad=0.03, shrink=0.8,
                         ticks=[0, 1, 2, 3, 4, 5])
     cbar.ax.set_xticklabels([CATEGORY_NAMES[i] for i in range(0, 6)])
-    ax.set_title(title)
+    ax.set_title(_with_run(title, fxx))
     out_path = out_path or (PRODUCTS / f"cat_{hazard}.png")
     fig.savefig(out_path, dpi=110, bbox_inches="tight")
     plt.close(fig)
@@ -146,7 +179,7 @@ def plot_categorical(category: np.ndarray, hazard: str, title: str,
 
 
 def plot_intensity(median_bin: np.ndarray, hazard: str, title: str,
-                   out_path: str | Path | None = None) -> str:
+                   out_path: str | Path | None = None, fxx: int | None = None) -> str:
     """Filled median conditional-intensity bin index (masked where < 0)."""
     import cartopy.crs as ccrs
     import matplotlib.pyplot as plt
@@ -172,7 +205,7 @@ def plot_intensity(median_bin: np.ndarray, hazard: str, title: str,
     cbar = fig.colorbar(pm, ax=ax, orientation="horizontal", pad=0.03, shrink=0.8,
                         ticks=range(n))
     cbar.ax.set_xticklabels(labels, rotation=30, fontsize=8)
-    ax.set_title(title)
+    ax.set_title(_with_run(title, fxx))
     out_path = out_path or (PRODUCTS / f"intensity_{hazard}.png")
     fig.savefig(out_path, dpi=110, bbox_inches="tight")
     plt.close(fig)

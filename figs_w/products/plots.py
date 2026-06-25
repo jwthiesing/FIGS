@@ -18,6 +18,7 @@ from figs.products import plots as P   # reuse _base_ax, set_extent, overlay_cig
 from .. import config as C
 
 set_extent = P.set_extent
+set_run_context = P.set_run_context   # re-export so callers only need figs_w.products.plots
 
 # Probability fill ramp: tan → orange → red → magenta → purple → deep purple (7 levels).
 PROB_COLORS = {"wildfire": ["#ffe7b3", "#ffcc99", "#ff9966", "#ff5a5a", "#ff00ff",
@@ -31,7 +32,7 @@ CAT_COLORS = {1: "#f6c87a", 2: "#ff5a5a", 3: "#ff33ff"}
 SIZE_COLORS = ["#ffffb2", "#fee391", "#fecc5c", "#fd8d3c", "#f03b20", "#bd0026", "#67000d"]
 
 
-def plot_probability(prob, title, out_path=None, cig=None):
+def plot_probability(prob, title, out_path=None, cig=None, fxx=None):
     import cartopy.crs as ccrs
     import matplotlib.pyplot as plt
 
@@ -45,13 +46,13 @@ def plot_probability(prob, title, out_path=None, cig=None):
     cbar = fig.colorbar(cf, ax=ax, orientation="horizontal", pad=0.03, shrink=0.8,
                         ticks=C.SPC_PROB_LEVELS["wildfire"])
     cbar.ax.set_xticklabels([f"{int(p*100)}%" for p in C.SPC_PROB_LEVELS["wildfire"]])
-    ax.set_title(title)
+    ax.set_title(P._with_run(title, fxx))
     out_path = out_path or (C.PRODUCTS / "fire_prob.png")
     fig.savefig(out_path, dpi=110, bbox_inches="tight"); plt.close(fig)
     return str(out_path)
 
 
-def plot_categorical(category, title, out_path=None):
+def plot_categorical(category, title, out_path=None, fxx=None):
     import cartopy.crs as ccrs
     import matplotlib.pyplot as plt
     from matplotlib.colors import BoundaryNorm, ListedColormap
@@ -66,13 +67,13 @@ def plot_categorical(category, title, out_path=None):
     cbar = fig.colorbar(pm, ax=ax, orientation="horizontal", pad=0.03, shrink=0.8,
                         ticks=[1, 2, 3])
     cbar.ax.set_xticklabels([C.CATEGORY_NAMES[i] for i in (1, 2, 3)])
-    ax.set_title(title)
+    ax.set_title(P._with_run(title, fxx))
     out_path = out_path or (C.PRODUCTS / "fire_categorical.png")
     fig.savefig(out_path, dpi=110, bbox_inches="tight"); plt.close(fig)
     return str(out_path)
 
 
-def plot_intensity(median_bin, title, out_path=None):
+def plot_intensity(median_bin, title, out_path=None, fxx=None):
     import cartopy.crs as ccrs
     import matplotlib.pyplot as plt
     from matplotlib.colors import BoundaryNorm, ListedColormap
@@ -88,7 +89,7 @@ def plot_intensity(median_bin, title, out_path=None):
                        transform=ccrs.PlateCarree(), shading="auto")
     cbar = fig.colorbar(pm, ax=ax, orientation="horizontal", pad=0.03, shrink=0.8, ticks=range(n))
     cbar.ax.set_xticklabels([f"{l} ac" for l in labels], rotation=30, fontsize=8)
-    ax.set_title(title)
+    ax.set_title(P._with_run(title, fxx))
     out_path = out_path or (C.PRODUCTS / "fire_size.png")
     fig.savefig(out_path, dpi=110, bbox_inches="tight"); plt.close(fig)
     return str(out_path)

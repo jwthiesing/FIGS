@@ -108,9 +108,13 @@ def predict_or_load(run, fxx_list, models_dir=None, *,
         preds = read_predictions(nc)
         if not [f for f in fxx_list if f not in preds]:
             print(f"[predict-w] loaded from cache: {nc}")
+            from ..products.plots import set_run_context
+            set_run_context(run, fxx_list)
             return preds
     preds = predict_forecast(run, fxx_list, models_dir=models_dir, workers=workers)
     if write:
         write_predictions(preds, run, nc)
         print(f"[predict-w] saved to {nc}")
+    from ..products.plots import set_run_context
+    set_run_context(run, fxx_list)
     return preds

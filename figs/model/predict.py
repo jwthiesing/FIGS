@@ -279,6 +279,8 @@ def predict_or_load(run, fxx_list, models_dir=None, *, max_members=6, temporal=F
             cached = netcdf.read_predictions(path)
             if all(f in cached for f in fxxs):
                 print(f"loaded cached predictions: {path}", flush=True)
+                from ..products.plots import set_run_context
+                set_run_context(run, fxxs)
                 return {f: cached[f] for f in fxxs}
         except Exception as e:  # noqa: BLE001 - corrupt/old cache -> recompute
             print(f"[warn] cache read failed ({e}); recomputing", flush=True)
@@ -287,4 +289,6 @@ def predict_or_load(run, fxx_list, models_dir=None, *, max_members=6, temporal=F
     if write:
         netcdf.write_predictions(preds, run, path)
         print(f"wrote predictions: {path}", flush=True)
+    from ..products.plots import set_run_context
+    set_run_context(run, fxxs)
     return preds
