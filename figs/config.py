@@ -27,8 +27,9 @@ PROCESSED = DATA_ROOT / "processed"      # feature/label parquet
 REPORTS_CACHE = DATA_ROOT / "reports"    # combined report DB cache
 MODELS = DATA_ROOT / "models"            # trained GBDT models + calibrators
 PRODUCTS = DATA_ROOT / "products"        # output plots / animations
+STATIC_CACHE = DATA_ROOT / "static"      # terrain / static geography cache
 
-for _p in (HRRR_CACHE, GRID_CACHE, PROCESSED, REPORTS_CACHE, MODELS, PRODUCTS):
+for _p in (HRRR_CACHE, GRID_CACHE, PROCESSED, REPORTS_CACHE, MODELS, PRODUCTS, STATIC_CACHE):
     _p.mkdir(parents=True, exist_ok=True)
 
 
@@ -222,6 +223,17 @@ UH_25KM_THRESHOLDS = (25, 75, 150, 300)     # m^2/s^2, 2–5 km updraft helicity
 # --------------------------------------------------------------------------- #
 HAZARDS = ("tor", "wind", "hail")
 
+# --------------------------------------------------------------------------- #
+# Static terrain fields (built once from SRTM, cached; see data/static.py). Given
+# the full Tier-1 spatial treatment (means + all-motion gradients) in feature
+# assembly, exactly like the environmental scalars. ``elev_gradx``/``elev_grady``
+# are the signed east/north terrain-slope components (rise/run).
+# --------------------------------------------------------------------------- #
+STATIC_TERRAIN_FIELDS = ("elev", "slope", "elev_gradx", "elev_grady",
+                         "aspect_sin", "aspect_cos")
+STATIC_TERRAIN_TEXTURE_FIELDS = ("tpi", "tri", "elev_std", "slope_std")
+STATIC_FIELDS = STATIC_TERRAIN_FIELDS + STATIC_TERRAIN_TEXTURE_FIELDS
+
 # Severe / significant-severe report thresholds (nadocast convention).
 SEVERE_THRESHOLDS = dict(tor_ef=0, wind_kt=50.0, hail_in=1.0)
 SIGNIFICANT_THRESHOLDS = dict(tor_ef=2, wind_kt=65.0, hail_in=2.0)
@@ -264,6 +276,34 @@ INTENSITY_BINS = {
 # CIG2); the other rows come directly from the CIG charts.
 # --------------------------------------------------------------------------- #
 CIG_CATEGORIES = ("<CIG1", "CIG1", "CIG2", "CIG3")
+
+# --------------------------------------------------------------------------- #
+# Peak Intensity Bins (PIB) — a unified 1..7 "most probable peak intensity within
+# 25 mi" scale, predicted as a separate subsystem (per-hazard multiclass model).
+# Each hazard maps its physical intensity onto the same 7 bins. Bins overlap on the
+# source chart; we assign deterministically using each bin's LOWER bound as its
+# threshold (so an ambiguous value lands in the higher/more-severe bin — apt for a
+# "peak intensity" target). PIB index 0..6 == PIB1..PIB7.
+#
+# Units: wind & tornado in MPH (tornado uses the DAT rated/estimated wind speed —
+# NOT an EF→mph table; see data/dat.py), hail in inches.
+#   tornado mph : ≤95 / 85-115 / 100-130 / 120-150 / 140-170 / 155-190 / 175+
+#   wind    mph : ≤60 / 55-70 / 65-80 / 75-90 / 85-100 / 95-115 / 110+
+#   hail    in  : ≤1.25 / 1.0-1.75 / 1.5-2.5 / 2.0-3.5 / 2.75-4.25 / 3.5-5 / 5+
+# (hail PIB6 = 3.5-5", PIB7 = 5+" per user spec.)
+PIB_LABELS = ("PIB1", "PIB2", "PIB3", "PIB4", "PIB5", "PIB6", "PIB7")
+PIB_BINS = {
+    "tor":  dict(edges=(85.0, 100.0, 120.0, 140.0, 155.0, 175.0), unit="mph"),
+    "wind": dict(edges=(55.0, 65.0, 75.0, 85.0, 95.0, 110.0), unit="mph"),
+    "hail": dict(edges=(1.0, 1.5, 2.0, 2.75, 3.5, 5.0), unit="in"),
+}
+# PIB fill/contour color table (Min→Max), matching the provided chart ramp:
+# pale yellow → yellows → oranges → red → magenta.
+PIB_COLORS = ("#fff5c2", "#fde285", "#fdc23f", "#fb9a2c", "#f4661f",
+              "#e11d1d", "#ff00ff")
+
+KT_TO_MPH = 1.15077945            # wind reports are stored in knots; PIB tables are mph
+
 
 CIG_REFERENCE = {
     "tor": {

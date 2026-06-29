@@ -15,7 +15,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..config import KINEMATIC_LEVELS, MANDATORY_HGT_LEVELS, SURFACE_POINT_FIELDS
+from ..config import (
+    KINEMATIC_LEVELS,
+    MANDATORY_HGT_LEVELS,
+    STATIC_FIELDS,
+    SURFACE_POINT_FIELDS,
+)
 from . import (
     boundaries,
     hodograph,
@@ -27,6 +32,21 @@ from . import (
     sr_params,
     thermo,
 )
+
+
+def _static_terrain_features() -> dict[str, np.ndarray]:
+    """Static terrain fields (elevation, slope, x/y gradients, aspect, texture) on the
+    FIGS grid — constant across valid times, built/cached once. Empty if unavailable."""
+    try:
+        from ..data.static import load_terrain_fields
+
+        return {k: np.asarray(v, dtype=np.float32) for k, v in load_terrain_fields().items()}
+    except Exception as e:  # noqa: BLE001 - terrain optional (deps/cache); features still build
+        import sys
+
+        print(f"[warn] terrain static fields unavailable ({str(e)[:80]}); skipping",
+              file=sys.stderr)
+        return {}
 
 
 def _level_winds(prof: profiles.Profiles) -> dict[float, tuple[np.ndarray, np.ndarray]]:
@@ -170,12 +190,18 @@ def compute_features(iso: dict, sfc: dict,
         feats.update(prob_fields)
         prob_names = list(prob_fields.keys())
 
+    # static terrain (elevation/slope/x-y gradients/aspect/texture) as point features;
+    # join the tier-1 set for means + all-motion gradients (e.g. up/downslope vs motion).
+    terrain = _static_terrain_features()
+    feats.update(terrain)
+    terrain_names = [k for k in STATIC_FIELDS if k in terrain]
+
     # Tier 1: non-motion environmental scalars -> means + gradients vs ALL motions.
     # (incl. T/Td at the levels we carry, lapse rates, surface-boundary gradients,
-    # and the ensemble probability fields).
+    # the ensemble probability fields, and the static terrain fields).
     tier1_names = (list(SPATIAL_BASE_FIELDS) + _tmp_dpt_spatial_names()
                    + lapse.lapse_feature_names() + boundaries.boundary_feature_names()
-                   + prob_names)
+                   + prob_names + terrain_names)
     base_fields = {name: feats[name] for name in tier1_names if name in feats}
     feats.update(spatial.spatial_features(base_fields, mvecs))
 
@@ -212,7 +238,8 @@ def compute_features(iso: dict, sfc: dict,
 
 def added_features(iso: dict, sfc: dict) -> dict[str, np.ndarray]:
     """Compute ONLY the newer feature families (lapse rates + surface-boundary
-    gradients) AND their Tier-1 spatial expansion (means + all-motion gradients).
+    gradients + static terrain) AND their Tier-1 spatial expansion (means +
+    all-motion gradients).
 
     This mirrors exactly what ``compute_features`` adds for these families, but
     skips the ~5,000 existing features — so an existing parquet can be augmented in
@@ -224,12 +251,15 @@ def added_features(iso: dict, sfc: dict) -> dict[str, np.ndarray]:
     pts: dict[str, np.ndarray] = {}
     pts.update(lapse.lapse_rate_features(prof))
     pts.update(boundaries.boundary_features(sfc))
+    terrain = _static_terrain_features()
+    pts.update(terrain)
 
     out = dict(pts)
-    # Tier-1 spatial treatment for the lapse + boundary scalars (same as in
+    # Tier-1 spatial treatment for the lapse + boundary + terrain scalars (same as in
     # compute_features: means at every radius + all-motion directional gradients).
     base = {k: pts[k] for k in (lapse.lapse_feature_names()
-                                + boundaries.boundary_feature_names()) if k in pts}
+                                + boundaries.boundary_feature_names()
+                                + [t for t in STATIC_FIELDS if t in terrain]) if k in pts}
     out.update(spatial.spatial_features(base, mvecs))
     return out
 

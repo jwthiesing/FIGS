@@ -35,6 +35,7 @@ from ..config import (
     INTENSITY_BINS,
     LEAD_BANDS,
     MODELS,
+    PIB_LABELS,
     PREDICT_SMOOTH_RADII_MI,
 )
 from ..data import dataset
@@ -68,11 +69,12 @@ def _postprocess(out: dict, radii_mi=PREDICT_SMOOTH_RADII_MI) -> dict:
         p = out.get(f"p_{h}")
         if p is not None and np.isfinite(p).any():
             out[f"p_{h}"] = _smooth_median(p, radii_mi)
-        d = out.get(f"dist_{h}")
-        if d is not None and np.isfinite(d).any():
-            sm = np.stack([_smooth_median(d[b], radii_mi) for b in range(d.shape[0])], axis=0)
-            s = sm.sum(axis=0, keepdims=True)
-            out[f"dist_{h}"] = np.where(s > 0, sm / s, sm).astype(np.float32)  # renormalize
+        for key in (f"dist_{h}", f"pib_{h}"):       # both are per-bin distributions
+            d = out.get(key)
+            if d is not None and np.isfinite(d).any():
+                sm = np.stack([_smooth_median(d[b], radii_mi) for b in range(d.shape[0])], axis=0)
+                s = sm.sum(axis=0, keepdims=True)
+                out[key] = np.where(s > 0, sm / s, sm).astype(np.float32)  # renormalize
     return out
 
 
@@ -129,6 +131,9 @@ def _load_band_models(models_dir: Path, tags) -> dict:
             ipath = models_dir / f"intensity_{h}_{tag}.pkl"
             if ipath.exists():
                 entry["intensity"] = GBDTModel.load(ipath)
+            ppath = models_dir / f"pib_{h}_{tag}.pkl"
+            if ppath.exists():
+                entry["pib"] = GBDTModel.load(ppath)
             models[(h, tag)] = entry
     return models
 
@@ -140,10 +145,11 @@ def _predict_from_matrix(X: np.ndarray, shape, models: dict, tags) -> dict:
     conditional-intensity distribution is averaged across bands.
     Returns {'p_<h>':(ny,nx),'dist_<h>':(nbins,ny,nx)}."""
     ny, nx = shape
+    npib = len(PIB_LABELS)
     out: dict[str, np.ndarray] = {}
     for h in HAZARDS:
         nbins = len(INTENSITY_BINS[h]["labels"])
-        p_stack, dist_stack = [], []
+        p_stack, dist_stack, pib_stack = [], [], []
         for tag in tags:
             e = models.get((h, tag))
             if e is None:
@@ -156,10 +162,15 @@ def _predict_from_matrix(X: np.ndarray, shape, models: dict, tags) -> dict:
             if "intensity" in e:
                 im = e["intensity"]
                 dist_stack.append(_dist_to_bins(im.predict_proba(X), im.classes_, nbins, shape))
+            if "pib" in e:
+                pm = e["pib"]
+                pib_stack.append(_dist_to_bins(pm.predict_proba(X), pm.classes_, npib, shape))
         out[f"p_{h}"] = (np.mean(p_stack, axis=0).reshape(ny, nx) if p_stack
                          else np.full((ny, nx), np.nan, np.float32))
         out[f"dist_{h}"] = (np.mean(dist_stack, axis=0) if dist_stack
                             else np.full((nbins, ny, nx), np.nan, np.float32))
+        out[f"pib_{h}"] = (np.mean(pib_stack, axis=0) if pib_stack
+                           else np.full((npib, ny, nx), np.nan, np.float32))
     return _postprocess(out)   # smooth-median -> final predictions (all downstream uses these)
 
 

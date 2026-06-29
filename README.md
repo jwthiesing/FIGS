@@ -3,9 +3,10 @@
 A gradient-boosted-tree severe-weather model in the style of
 [nadocast](https://github.com/brianhempel/nadocast), in Python, trained on
 **time-lagged HRRR** data. Predicts, per forecast hour and per ~15 km grid cell,
-the probability of each hazard (tornado / wind / hail) **and** the conditional
-intensity distribution within each hazard, then renders SPC-style probability +
-Conditional Intensity Guidance (CIG) products.
+the probability of each hazard (tornado / wind / hail), the conditional intensity
+distribution within each hazard, **and the Peak Intensity Bin (PIB)** — the most
+probable peak intensity within 25 mi — then renders SPC-style probability +
+Conditional Intensity Guidance (CIG) products + PIB products.
 
 ## Architecture (download-optimized)
 
@@ -33,6 +34,41 @@ Conditional Intensity Guidance (CIG) products.
 
 `p(tor) p(wind) p(hail)` · `p(EF0..EF4+|tor)` · `p(50-55..83+kt|wind)` ·
 `p(1-1.49..3.5+in|hail)` → mapped to SPC probability + CIG categorical outlooks.
+
+Plus the **PIB subsystem**: per hazard, a 7-class distribution over the unified
+**Peak Intensity Bin** scale (PIB1..PIB7 = "most probable peak intensity within
+25 mi"), rendered as a probability/PIB overlap product (see below).
+
+### Peak Intensity Bins (PIB)
+
+A separate per-hazard multiclass model predicts the unified 1–7 peak-intensity
+scale. Each hazard maps its physical intensity to the same 7 bins; bins overlap on
+the source chart, so a value is assigned deterministically by each bin's **lower
+bound** (ambiguous → higher/more-severe bin — apt for a *peak* target):
+
+| PIB | tornado (mph) | wind (mph) | hail (in) |
+|---|---|---|---|
+| 1 | ≤95 | ≤60 | ≤1.25 |
+| 2 | 85–115 | 55–70 | 1.0–1.75 |
+| 3 | 100–130 | 65–80 | 1.5–2.5 |
+| 4 | 120–150 | 75–90 | 2.0–3.5 |
+| 5 | 140–170 | 85–100 | 2.75–4.25 |
+| 6 | 155–190 | 95–115 | **3.5–5** |
+| 7 | 175+ | 110+ | **5+** |
+
+- **Label = MAX intensity within 25 mi.** Every cell's `{hazard}_pib` is the
+  maximum PIB over all reports/tracks whose 25 mi neighborhood covers it.
+- **Wind / tornado use rated WIND SPEED (mph), not EF.** Tornado PIB comes only
+  from the **NWS DAT** damage-survey wind speed (Damage Lines `maxwind`, stamped
+  along the full track path like the SVRGIS tracks; Damage Points back up wind).
+  There is **no EF→mph table** — a tornado/wind with no DAT/measured speed counts
+  for occurrence but gets no PIB. Hail PIB uses diameter; wind PIB uses native LSR
+  mph + DAT damage-wind backfill.
+- **DAT timing.** DAT timestamps are unreliable, so DAT is fetched per **UTC day**
+  and each event is timed by association to the nearest same-day SVRGIS track / LSR
+  report **within 25 mi** (unmatched DAT events are dropped).
+- **Product.** `plot_pib` overlays the PIB as filled colored bands (the PIB color
+  ramp, pale-yellow→magenta) inside the probability contours — no hatching.
 
 ### Probability + CIG → categorical (custom)
 
@@ -90,10 +126,10 @@ SPC probability-to-category tables that adds a low **TSTM** row and a **CIG3**
 
 ## Input parameters (per forecast hour)
 
-≈6,100 features. Most are **spatially smoothed**: the key fields are averaged at
-25/50/100 mi and given forward/leftward/straddling gradients, in two tiers, so the
-model sees neighborhood context (not just noisy point values). `--temporal` adds
-previous/following-hour copies (~3×).
+≈6,600 features (incl. static terrain). Most are **spatially smoothed**: the key
+fields are averaged at 25/50/100 mi and given forward/leftward/straddling gradients,
+in two tiers, so the model sees neighborhood context (not just noisy point values).
+`--temporal` adds previous/following-hour copies (~3×).
 
 **Tier 1 — non-motion scalars** (means + gradients vs **all 5** storm motions;
 48 cols each, ~70 fields → ~3,400):
@@ -106,6 +142,7 @@ previous/following-hour copies (~3×).
 | Lapse rates | 5 | −dT/dz (K/km) over 0–500 m, 500–1000 m, 1–3 km, 3–6 km (SR-wind layers) + 6–9 km |
 | Surface boundaries | 15 | gradients flagging boundaries (outflow/front/dryline) for deviant supercells: signed ∂/∂x,∂/∂y + magnitude of 2 m T & 2 m Td; the four 10 m wind-vector gradient components (∂u/∂x,∂u/∂y,∂v/∂x,∂v/∂y); 10 m convergence, vorticity, stretching/shearing/total deformation |
 | Ensemble probability | 15 | REFC ≥{10,20,30,40,50}, REFD ≥{30,40,50}, UH 0–3 km ≥{25,75,150}, UH 2–5 km ≥{25,75,150,300} — fraction of members exceeding |
+| Static terrain | 10 | elevation, slope, signed E/N slope components (`elev_gradx`/`elev_grady`), aspect sin/cos, + ruggedness texture (TPI, TRI, elevation-std, slope-std over 25 mi) — from SRTM, regridded + cached once |
 
 **Tier 2 — motion-relative scalars** (means + gradients in their **own** frame
 only; 12 cols each, ~190 fields → ~2,280):

@@ -12,9 +12,9 @@ from pathlib import Path
 
 import numpy as np
 
-from ..config import HAZARDS, INTENSITY_BINS, PRODUCTS
+from ..config import HAZARDS, INTENSITY_BINS, PIB_LABELS, PRODUCTS
 from ..data import grid
-from . import cig
+from . import cig, pib as pibmod
 
 
 def predictions_path(run, out_path: str | Path | None = None, fxx=None) -> Path:
@@ -43,6 +43,8 @@ def read_predictions(path: str | Path) -> dict:
             for h in HAZARDS:
                 d[f"p_{h}"] = ds[f"p_{h}"].isel(fxx=i).values.astype("float32")
                 d[f"dist_{h}"] = ds[f"dist_{h}"].isel(fxx=i).values.astype("float32")
+                if f"pib_{h}" in ds:
+                    d[f"pib_{h}"] = ds[f"pib_{h}"].isel(fxx=i).values.astype("float32")
             out[f] = d
     return out
 
@@ -81,6 +83,17 @@ def write_predictions(predictions: dict, run, out_path: str | Path | None = None
                         for i, f in enumerate(fxxs)], axis=0)
         ds[f"cig_{h}"] = (("fxx", "y", "x"), cig_idx.astype("int8"))
         ds[f"category_{h}"] = (("fxx", "y", "x"), cat.astype("int8"))
+
+        # PIB (peak-intensity-bin) 7-class distribution + derived most-probable bin
+        if all(f"pib_{h}" in predictions[f] for f in fxxs):
+            if f"{h}_pib_bin" not in ds.coords:
+                ds.coords[f"{h}_pib_bin"] = (f"{h}_pib_bin", list(PIB_LABELS))
+            pdist = np.stack([np.asarray(predictions[f][f"pib_{h}"]) for f in fxxs], axis=0)
+            mpb = np.stack([pibmod.most_probable_pib(predictions[f][f"pib_{h}"]) for f in fxxs], axis=0)
+            ds[f"pib_{h}"] = (("fxx", f"{h}_pib_bin", "y", "x"), pdist.astype("float32"))
+            ds[f"pib_{h}"].attrs["long_name"] = f"peak-intensity-bin distribution | {h}"
+            ds[f"pib_mode_{h}"] = (("fxx", "y", "x"), mpb.astype("int8"))
+            ds[f"pib_mode_{h}"].attrs["long_name"] = f"most probable peak intensity bin (0..6) | {h}"
 
     ds.attrs["title"] = "FIGS — Forecasting Intensity Guidance for Severe weather"
     ds.attrs["run"] = run.isoformat()

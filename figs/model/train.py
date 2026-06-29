@@ -95,7 +95,8 @@ def train_all(parquet_path: str, out_dir: str | None = None, *,
 
     from sklearn.metrics import average_precision_score, roc_auc_score
 
-    label_cols = [h for h in HAZARDS] + [f"{h}_bin" for h in HAZARDS]
+    label_cols = ([h for h in HAZARDS] + [f"{h}_bin" for h in HAZARDS]
+                  + [f"{h}_pib" for h in HAZARDS])
     aux_cols = label_cols + ["weight"]
     for b in bands:
         tag = "pooled" if b is None else b.name
@@ -123,6 +124,7 @@ def train_all(parquet_path: str, out_dir: str | None = None, *,
                 continue
             ytr = {h: aux_tr[h].to_numpy(np.int8) for h in HAZARDS}
             ybin = {h: aux_tr[f"{h}_bin"].to_numpy(np.int8) for h in HAZARDS}
+            ypib = {h: aux_tr[f"{h}_pib"].to_numpy(np.int8) for h in HAZARDS}
             wtr = aux_tr["weight"].to_numpy(np.float32)
             if n_bags > 1:
                 # This bag holds ALL positives but only ~1/n_bags of the negatives,
@@ -147,8 +149,8 @@ def train_all(parquet_path: str, out_dir: str | None = None, *,
                 if len(np.unique(yva[h])) > 1:
                     pva_sum[h] += hm.predict_pos(Xva)
                 del hm
-                # conditional-intensity model: trained ONCE (all positives are in
-                # every bag, so bag 0's positive subset is the full positive set).
+                # conditional-intensity + PIB models: trained ONCE (all positives are
+                # in every bag, so bag 0's positive subset is the full positive set).
                 if k == 0:
                     idx = np.where((ytr[h] == 1) & (ybin[h] >= 0))[0]
                     if idx.size >= 50 and np.unique(ybin[h][idx]).size >= 2:
@@ -156,6 +158,14 @@ def train_all(parquet_path: str, out_dir: str | None = None, *,
                         im.fit(Xtr[idx], ybin[h][idx], sample_weight=wtr[idx])
                         im.save(out_dir / f"intensity_{h}_{tag}.pkl")
                         del im
+                    # PIB (peak-intensity-bin) multiclass: positive cells with a known
+                    # PIB (rated wind mph / hail size present). Separate subsystem.
+                    pidx = np.where((ytr[h] == 1) & (ypib[h] >= 0))[0]
+                    if pidx.size >= 50 and np.unique(ypib[h][pidx]).size >= 2:
+                        pm = GBDTModel(task="multiclass", backend=backend, **hp)
+                        pm.fit(Xtr[pidx], ypib[h][pidx], sample_weight=wtr[pidx])
+                        pm.save(out_dir / f"pib_{h}_{tag}.pkl")
+                        del pm
                 _clear_mlx_cache()
                 step += 1
                 elapsed = time.time() - t0

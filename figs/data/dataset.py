@@ -25,7 +25,8 @@ from . import ensemble, grid
 from . import labels as labels_mod
 
 META_COLS = ["valid_time", "fxx", "iy", "ix", "lat", "lon", "split", "weight"]
-LABEL_COLS = [h for h in HAZARDS] + [f"{h}_sig" for h in HAZARDS] + [f"{h}_bin" for h in HAZARDS]
+LABEL_COLS = ([h for h in HAZARDS] + [f"{h}_sig" for h in HAZARDS]
+              + [f"{h}_bin" for h in HAZARDS] + [f"{h}_pib" for h in HAZARDS])
 
 
 def _disk_free_gb(path=HRRR_CACHE) -> float:
@@ -325,6 +326,7 @@ def build_row_table(
     data.update({h: labels[h][iy, ix] for h in HAZARDS})
     data.update({f"{h}_sig": labels[f"{h}_sig"][iy, ix] for h in HAZARDS})
     data.update({f"{h}_bin": labels[f"{h}_bin"][iy, ix] for h in HAZARDS})
+    data.update({f"{h}_pib": labels[f"{h}_pib"][iy, ix] for h in HAZARDS})
     data["valid_time"] = np.full(iy.shape, valid_time.replace(tzinfo=timezone.utc))
     if fxx is not None:
         data["fxx"] = np.full(iy.shape, int(fxx), dtype=np.int16)

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..config import CATEGORY_NAMES, PRODUCTS, SPC_PROB_LEVELS
+from ..config import CATEGORY_NAMES, PIB_COLORS, PIB_LABELS, PRODUCTS, SPC_PROB_LEVELS
 from ..data import grid
 
 # SPC probabilistic-outlook fill colors, per hazard, aligned to config.SPC_PROB_LEVELS.
@@ -207,6 +207,44 @@ def plot_intensity(median_bin: np.ndarray, hazard: str, title: str,
     cbar.ax.set_xticklabels(labels, rotation=30, fontsize=8)
     ax.set_title(_with_run(title, fxx))
     out_path = out_path or (PRODUCTS / f"intensity_{hazard}.png")
+    fig.savefig(out_path, dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    return str(out_path)
+
+
+def plot_pib(prob: np.ndarray, pib: np.ndarray, hazard: str, title: str,
+             out_path: str | Path | None = None, fxx: int | None = None) -> str:
+    """Probability / Peak-Intensity-Bin overlap map (the PIB analog of the
+    probability+CIG plot): the hazard probability is the filled contour (standard SPC
+    prob colors), and the **PIB** is overlaid as FILLED colored bands using the PIB
+    color table (``config.PIB_COLORS``) — NO hatching. The PIB fill is drawn only
+    inside the plotted probability area and at reduced opacity so the probability
+    contours read through. ``pib`` is an (ny, nx) int field (0..6 == PIB1..PIB7; <0
+    none, not drawn)."""
+    import cartopy.crs as ccrs
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import BoundaryNorm, ListedColormap
+
+    lat, lon = grid.figs_latlon()
+    prob_levels = SPC_PROB_LEVELS[hazard]
+    fig, ax = _base_ax()
+    # probability as line contours (so the PIB color fill below is the dominant fill)
+    cs = ax.contour(lon, lat, prob, levels=prob_levels, colors="0.25", linewidths=0.7,
+                    transform=ccrs.PlateCarree())
+    ax.clabel(cs, fmt=lambda v: f"{int(round(v*100))}%", fontsize=6, inline=True)
+    # PIB filled bands, masked to the drawn probability area (>= lowest contour)
+    n = len(PIB_LABELS)
+    pib = np.where(np.asarray(prob) >= prob_levels[0], np.asarray(pib), -1)
+    masked = np.ma.masked_where(pib < 0, pib)
+    cmap = ListedColormap(list(PIB_COLORS[:n]))
+    norm = BoundaryNorm(np.arange(-0.5, n, 1.0), cmap.N)
+    pm = ax.pcolormesh(lon, lat, masked, cmap=cmap, norm=norm, alpha=0.85,
+                       transform=ccrs.PlateCarree(), shading="auto", zorder=0.5)
+    cbar = fig.colorbar(pm, ax=ax, orientation="horizontal", pad=0.03, shrink=0.8,
+                        ticks=range(n))
+    cbar.ax.set_xticklabels(PIB_LABELS, fontsize=8)
+    ax.set_title(_with_run(title, fxx))
+    out_path = out_path or (PRODUCTS / f"pib_{hazard}.png")
     fig.savefig(out_path, dpi=110, bbox_inches="tight")
     plt.close(fig)
     return str(out_path)
