@@ -112,7 +112,8 @@ def _tmp_dpt_spatial_names() -> list[str]:
 
 
 def compute_features(iso: dict, sfc: dict,
-                     prob_fields: dict[str, np.ndarray] | None = None) -> dict[str, np.ndarray]:
+                     prob_fields: dict[str, np.ndarray] | None = None,
+                     valid_time=None) -> dict[str, np.ndarray]:
     """Full single-hour feature dict (each value (ny, nx)).
 
     ``prob_fields`` are the ensemble member-exceedance probability fields
@@ -196,6 +197,13 @@ def compute_features(iso: dict, sfc: dict,
     feats.update(terrain)
     terrain_names = [k for k in STATIC_FIELDS if k in terrain]
 
+    # theoretical clear-sky solar irradiance (day/night + sun-angle) as RAW point
+    # features — smooth by construction, so no spatial-tier expansion needed.
+    if valid_time is not None:
+        from . import solar
+
+        feats.update(solar.solar_features(valid_time))
+
     # Tier 1: non-motion environmental scalars -> means + gradients vs ALL motions.
     # (incl. T/Td at the levels we carry, lapse rates, surface-boundary gradients,
     # the ensemble probability fields, and the static terrain fields).
@@ -236,10 +244,10 @@ def compute_features(iso: dict, sfc: dict,
     return feats
 
 
-def added_features(iso: dict, sfc: dict) -> dict[str, np.ndarray]:
+def added_features(iso: dict, sfc: dict, valid_time=None) -> dict[str, np.ndarray]:
     """Compute ONLY the newer feature families (lapse rates + surface-boundary
-    gradients + static terrain) AND their Tier-1 spatial expansion (means +
-    all-motion gradients).
+    gradients + static terrain + theoretical solar irradiance) AND the Tier-1
+    spatial expansion (means + all-motion gradients) of the non-solar families.
 
     This mirrors exactly what ``compute_features`` adds for these families, but
     skips the ~5,000 existing features — so an existing parquet can be augmented in
@@ -261,6 +269,11 @@ def added_features(iso: dict, sfc: dict) -> dict[str, np.ndarray]:
                                 + boundaries.boundary_feature_names()
                                 + [t for t in STATIC_FIELDS if t in terrain]) if k in pts}
     out.update(spatial.spatial_features(base, mvecs))
+    # solar irradiance: raw point features (no spatial expansion), needs the time
+    if valid_time is not None:
+        from . import solar
+
+        out.update(solar.solar_features(valid_time))
     return out
 
 

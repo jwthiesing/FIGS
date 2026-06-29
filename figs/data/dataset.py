@@ -276,8 +276,10 @@ def _features_for_valid(valid_time: datetime, max_members: int, temporal: bool,
     real-time-faithful samples; the t-1/t+1 fields are capped at the same time."""
     def one(vt):
         inp = ensemble.assemble_inputs(vt, max_members, as_of=as_of)
-        # prob_fields are merged AND spatially smoothed inside compute_features
-        return assemble.compute_features(inp["iso"], inp["sfc"], prob_fields=inp["prob_fields"])
+        # prob_fields are merged AND spatially smoothed inside compute_features;
+        # valid_time drives the theoretical solar-irradiance features.
+        return assemble.compute_features(inp["iso"], inp["sfc"], prob_fields=inp["prob_fields"],
+                                         valid_time=vt)
 
     feats = one(valid_time)
     if temporal:
@@ -514,7 +516,7 @@ def _added_columns_for_group(valid_time: datetime, fxx: int, iy: np.ndarray, ix:
         # subsets are already downloaded — far fewer file checks than a full assemble.
         iso15, sfc15 = ensemble.main_member_iso_sfc(vt, max_members, as_of=as_of,
                                                     cached_only=True)
-        return assemble.added_features(iso15, sfc15)
+        return assemble.added_features(iso15, sfc15, valid_time=vt)
 
     grids = one(valid_time)
     if temporal:                                   # match a temporally-built parquet

@@ -156,7 +156,13 @@ only; 12 cols each, ~190 fields → ~2,280):
 surface-relative levels: 25 mb ≤150, 50 mb ≤500, 100 mb above), SR-wind vector
 components, motion vectors (u/v/spd of the 5 motions), mandatory-level HGT
 (925→100 mb), surface scalars (2 m T/Td + rotated 10 m wind, SOILW, TSOIL, PWAT,
-cloud, precip type, RELV 0–1/0–2 km), and the T/Td-at-level point values.
+cloud, precip type, RELV 0–1/0–2 km), the T/Td-at-level point values, and the
+**theoretical solar irradiance** (4 fields: clamped cos-zenith, solar elevation
+angle, TOA + Haurwitz clear-sky GHI). The solar fields are computed analytically
+from grid lat/lon + the valid date/time (vectorized NOAA solar geometry, no HRRR
+input), giving the model a day/night + diurnal + seasonal + sun-angle prior it
+can't reconstruct from the instantaneous fields — *without* telling it the clock
+time or location.
 
 5 storm motions = Bunkers RM/LM, 0–6 km mean wind, Corfidi up/downshear. The
 fetched isobaric set is **19 fixed levels** (1000→100 mb, 25/50/100 mb spacing;
