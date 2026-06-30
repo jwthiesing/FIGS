@@ -56,7 +56,7 @@ def cmd_build_data(args):
     build_dataset_for_runs(pairs, args.out, max_members=args.members,
                            temporal=args.temporal, neg_keep=args.neg_keep,
                            min_free_gb=args.min_free_gb, workers=args.workers,
-                           flush_every=args.flush_every)
+                           flush_every=args.flush_every, resume=args.resume)
 
 
 def cmd_augment_data(args):
@@ -130,6 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="include previous/following-hour fields (~3x storage; off by default)")
     b.add_argument("--min-free-gb", type=float, default=50.0,
                    help="stop the build if free disk drops below this (GB)")
+    b.add_argument("--resume", action="store_true",
+                   help="continue a crashed/partial build: keep existing part-files, skip "
+                        "their (run,fxx) samples, and number new parts after them")
     b.set_defaults(func=cmd_build_data)
 
     a = sub.add_parser("augment-data",

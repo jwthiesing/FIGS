@@ -90,6 +90,33 @@ def _write_part(frames: list, parts_dir, idx: int) -> int:
     return idx + 1
 
 
+def _resume_state(parts_dir):
+    """Scan existing ``part-*.parquet`` for a crashed/partial build → ``(next_idx,
+    done_pairs)``: the part index to continue from (so we never overwrite) and the set
+    of already-built ``(run_epoch_seconds, fxx)`` keys to skip. Reads only the
+    ``valid_time``/``fxx`` columns; ``run = valid_time − fxx h``."""
+    from pathlib import Path
+
+    import pyarrow.parquet as pq
+
+    parts = sorted(Path(parts_dir).glob("part-*.parquet"))
+    if not parts:
+        return 0, set()
+    next_idx = max(int(p.stem.split("-")[1]) for p in parts) + 1
+    done: set = set()
+    for p in parts:
+        try:
+            t = pq.read_table(p, columns=["valid_time", "fxx"]).to_pandas()
+        except Exception:  # noqa: BLE001 - a half-written final part: ignore (will rebuild)
+            continue
+        vt = pd.to_datetime(t["valid_time"], utc=True)
+        run = vt - pd.to_timedelta(t["fxx"].astype(int), unit="h")
+        # tz-aware → UTC epoch seconds (numpy drops tz to datetime64[ns] UTC)
+        secs = run.to_numpy(dtype="datetime64[ns]").astype("int64") // 1_000_000_000
+        done.update(zip(secs.tolist(), t["fxx"].astype(int).tolist()))
+    return next_idx, done
+
+
 def read_dataset(path: str, *, filters=None, columns=None) -> pd.DataFrame:
     """Read a dataset (single parquet file or directory of part files). ``filters``
     (pyarrow predicate-pushdown, e.g. ``[('fxx','>=',13),('fxx','<=',24)]``) and
@@ -395,6 +422,7 @@ def build_dataset_for_runs(
     min_free_gb: float = 50.0,
     flush_every: int = 25,
     workers: int = 1,
+    resume: bool = False,
 ) -> str:
     """Build a parquet matrix over (primary_run, fxx) samples using the
     issuance-capped (real-time-faithful) time-lagged ensemble. This is the
@@ -405,13 +433,26 @@ def build_dataset_for_runs(
     more simultaneous S3 streams when bandwidth has headroom. Stops cleanly
     (writing what's accumulated) if free disk drops below ``min_free_gb``;
     checkpoints the parquet every ``flush_every`` completed samples.
+
+    ``resume`` continues a crashed/partial build: existing part-files are kept,
+    their (run, fxx) samples are skipped, and new parts are numbered after them.
     """
     if out_path is None:
         out_path = str(PROCESSED / "dataset.parquet")
     parts_dir = _parts_dir(out_path)
+    part_idx = 0
+    if resume:
+        part_idx, done_pairs = _resume_state(parts_dir)
+        if done_pairs:
+            before = len(run_fxx_pairs)
+            run_fxx_pairs = [(r, f) for (r, f) in run_fxx_pairs
+                             if (int(r.timestamp()), int(f)) not in done_pairs]
+            print(f"[resume] {len(done_pairs):,} samples already built in "
+                  f"{part_idx} part-file(s); {before - len(run_fxx_pairs):,} skipped, "
+                  f"{len(run_fxx_pairs):,} remaining", flush=True)
     total = len(run_fxx_pairs)
     t0 = time.time()
-    frames, part_idx, rows = [], 0, 0
+    frames, rows = [], 0
 
     def flush():
         nonlocal frames, part_idx, rows
