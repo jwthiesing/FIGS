@@ -11,8 +11,21 @@ from pathlib import Path
 
 import numpy as np
 
-from ..config import CATEGORY_NAMES, PIB_COLORS, PIB_LABELS, PRODUCTS, SPC_PROB_LEVELS
+from ..config import CATEGORY_NAMES, PIB_BINS, PIB_COLORS, PIB_LABELS, PRODUCTS, SPC_PROB_LEVELS
 from ..data import grid
+
+
+def _pib_bin_labels(hazard: str) -> tuple[list[str], str]:
+    """Human-readable PIB bin ranges for a hazard's colorbar, derived from the
+    deterministic lower-bound edges in ``PIB_BINS`` (the ranges the model actually
+    bins by). Returns (labels, unit) — e.g. wind → (['<55','55–65',…,'110+'], 'mph')."""
+    spec = PIB_BINS[hazard]
+    edges, unit = spec["edges"], spec["unit"]
+    g = lambda v: f"{v:g}"
+    labels = [f"<{g(edges[0])}"]
+    labels += [f"{g(edges[i - 1])}–{g(edges[i])}" for i in range(1, len(edges))]
+    labels.append(f"{g(edges[-1])}+")
+    return labels, unit
 
 # SPC probabilistic-outlook fill colors, per hazard, aligned to config.SPC_PROB_LEVELS.
 # The lowest level is a FIGS custom addition below the SPC levels, drawn a fainter
@@ -242,7 +255,9 @@ def plot_pib(prob: np.ndarray, pib: np.ndarray, hazard: str, title: str,
                        transform=ccrs.PlateCarree(), shading="auto", zorder=0.5)
     cbar = fig.colorbar(pm, ax=ax, orientation="horizontal", pad=0.03, shrink=0.8,
                         ticks=range(n))
-    cbar.ax.set_xticklabels(PIB_LABELS, fontsize=8)
+    bin_labels, unit = _pib_bin_labels(hazard)
+    cbar.ax.set_xticklabels(bin_labels[:n], rotation=30, fontsize=7)
+    cbar.set_label(f"Peak Intensity Bin ({unit})", fontsize=8)
     ax.set_title(_with_run(title, fxx))
     out_path = out_path or (PRODUCTS / f"pib_{hazard}.png")
     fig.savefig(out_path, dpi=110, bbox_inches="tight")

@@ -105,37 +105,53 @@ REPORTS_REFRESH_GRACE = timedelta(hours=12)
 def reports_for_day(day_utc: datetime, *, refresh: bool = False) -> pd.DataFrame:
     """Normalized FIGS reports for a single UTC calendar day (cached as CSV).
 
-    The CSV cache is only trusted once the day is well over (see
-    ``REPORTS_REFRESH_GRACE``); for the current/just-ended day the reports are still
-    being logged, so it always re-fetches fresh and rewrites the cache. ``refresh``
-    forces a re-fetch regardless."""
+    A cached CSV is trusted ONLY if it was WRITTEN after the day finalized
+    (day end + ``REPORTS_REFRESH_GRACE``). This matters because a window/forecast
+    can fetch a day while it's still in progress — or even before it starts (a
+    forecast valid into a future day) — freezing a partial/empty report set; gating
+    on the cache's mtime (not just ``now``) means such a premature cache is always
+    re-fetched once the day is actually over, instead of being served as final.
+    ``refresh`` forces a re-fetch regardless."""
+    import os
+
     if day_utc.tzinfo is None:
         day_utc = day_utc.replace(tzinfo=timezone.utc)
     day0 = day_utc.replace(hour=0, minute=0, second=0, microsecond=0)
     path = _day_cache_path(day0)
-    still_updating = datetime.now(timezone.utc) < day0 + timedelta(days=1) + REPORTS_REFRESH_GRACE
-    if path.exists() and not refresh and not still_updating:
+    final_after = day0 + timedelta(days=1) + REPORTS_REFRESH_GRACE   # day is "done" after this
+    cache_is_final = False
+    if path.exists():
+        written = datetime.fromtimestamp(os.path.getmtime(path), timezone.utc)
+        cache_is_final = written >= final_after        # written when the day was already complete
+    if cache_is_final and not refresh:
         df = pd.read_csv(path, parse_dates=["time"])
         if not df.empty:
             df["time"] = pd.to_datetime(df["time"], utc=True)
         if "wind_mph" not in df.columns:          # back-compat for pre-PIB caches
             df["wind_mph"] = float("nan")
+        # Pre-PIB caches lack wind_mph entirely → wind PIB would be empty. Recover it
+        # for wind rows from the stored knots magnitude (kt → mph; exact, since
+        # _normalize stored mph*MPH_TO_KT) so measured wind reports keep their PIB.
+        if not df.empty:
+            m = (df["hazard"] == "wind") & df["wind_mph"].isna()
+            if m.any():
+                df.loc[m, "wind_mph"] = df.loc[m, "magnitude"] / MPH_TO_KT
         return df
+    # (re)fetch: the cache is missing, premature (written before the day finalized),
+    # or a forced refresh. The reference fetcher has its OWN per-day raw-IEM cache and
+    # only re-downloads when that file is missing — so a premature/partial copy would
+    # defeat the re-fetch. Drop it (and the boundary day the window touches) to force
+    # a fresh pull whenever we don't already hold a finalized cache.
     rep = _reference_reports_module()
-    if still_updating or refresh:
-        # The reference fetcher has its OWN per-day cache of raw IEM LSRs and only
-        # re-downloads when that file is missing — so an in-progress day's stale/empty
-        # copy would defeat the refresh above. Drop it (and the boundary day the
-        # window also touches) to force a fresh pull of the latest reports.
-        cache_path = getattr(rep, "_iem_lsr_cache_path", None)
-        if cache_path is not None:
-            for dd in (day0, day0 + timedelta(days=1)):
-                try:
-                    p = cache_path(dd)
-                    if p.exists():
-                        p.unlink()
-                except Exception:  # noqa: BLE001 - best-effort cache invalidation
-                    pass
+    cache_path = getattr(rep, "_iem_lsr_cache_path", None)
+    if cache_path is not None:
+        for dd in (day0, day0 + timedelta(days=1)):
+            try:
+                p = cache_path(dd)
+                if p.exists():
+                    p.unlink()
+            except Exception:  # noqa: BLE001 - best-effort cache invalidation
+                pass
     raw = rep.fetch_reports(day0, day0 + timedelta(days=1))
     df = _normalize(raw)
     df.to_csv(path, index=False)            # always rewrite: keeps the freshest copy on disk
